@@ -3,16 +3,12 @@ package com.openpositioning.PositionMe.presentation.trajmap;
 import android.content.Context;
 
 import com.google.android.gms.maps.GoogleMap;
-import com.google.android.gms.maps.model.BitmapDescriptorFactory;
 import com.google.android.gms.maps.model.LatLng;
 import com.google.android.gms.maps.model.Marker;
-import com.google.android.gms.maps.model.MarkerOptions;
-import com.openpositioning.PositionMe.R;
-import com.openpositioning.PositionMe.utils.UtilFunctions;
+import com.openpositioning.PositionMe.presentation.trajmap.MarkerFactory;
+import com.openpositioning.PositionMe.presentation.trajmap.POILocationProvider;
 
-import java.util.Arrays;
 import java.util.List;
-import java.util.Objects;
 
 /**
  * Utility class for managing and updating markers on a Google Map, representing various points of interest within a building,
@@ -48,39 +44,19 @@ public class TrajectoryMapMaker {
         }
         medicalRoomMarkers.clear();
 
-        // Determine the placement of MedicalRoom based on floor and building name.
-        List<LatLng> medicalRoomLocations = null;
-        if (currentFloor == 0 && Objects.equals(currentBuilding, "nucleus")) {
-            medicalRoomLocations = Arrays.asList(
-            );
-        }
-        else if (currentFloor == 1 && Objects.equals(currentBuilding, "nucleus")) {
-            medicalRoomLocations = Arrays.asList(
-            );
-        }
-        else if (currentFloor == 2 && Objects.equals(currentBuilding, "nucleus")) {
-            medicalRoomLocations = Arrays.asList(
-                    new LatLng(55.923291498633766, -3.1743306666612625)
-            );
-        }
-        else if (currentFloor == 3 && Objects.equals(currentBuilding, "nucleus")) {
-            medicalRoomLocations = Arrays.asList(
-            );
-        }
-        else if (currentFloor == 4 && Objects.equals(currentBuilding, "nucleus")) {
-            medicalRoomLocations = Arrays.asList(
-            );
-        }
+        // Retrieve locations from configuration
+        List<LatLng> medicalRoomLocations = POILocationProvider.getLocations(
+                "medicalRoom", currentBuilding, currentFloor, context);
 
         // If not null, add Markers sequentially.
         if (medicalRoomLocations != null) {
             for (LatLng location : medicalRoomLocations) {
-                Marker marker = gMap.addMarker(new MarkerOptions()
-                        .position(location)
-                        .flat(true)
-                        .title("Medical Room")
-                        .icon(BitmapDescriptorFactory.fromBitmap(
-                                UtilFunctions.getBitmapFromVector(context, R.drawable.iso_first_aid_icon)))
+                Marker marker = MarkerFactory.createMarker(
+                        gMap,
+                        location,
+                        "Medical Room",
+                        "medicalRoom",
+                        context
                 );
                 if (marker != null) {
                     medicalRoomMarkers.add(marker);
@@ -112,50 +88,18 @@ public class TrajectoryMapMaker {
         }
         emergencyExitMarkers.clear();
 
-        List<LatLng> exitLocations = null;
-
-        if (currentFloor == 0 && Objects.equals(currentBuilding, "nucleus")) {
-            exitLocations = Arrays.asList(
-                    new LatLng(55.92327684586336, -3.174331672489643),
-                    new LatLng(55.92305836864246, -3.174259588122368),
-                    new LatLng(55.923040334354255, -3.174433596432209)
-            );
-        }
-        else if (currentFloor == 1 && Objects.equals(currentBuilding, "nucleus")) {
-            exitLocations = Arrays.asList(
-                    new LatLng(55.922839326615474, -3.17451573908329),
-                    new LatLng(55.92283913875728, -3.1742961332201958),
-                    new LatLng(55.92330295784777, -3.174157999455929),
-                    new LatLng(55.92287501965453, -3.174012154340744),
-                    new LatLng(55.92301422219288, -3.173900842666626),
-                    new LatLng(55.92308936505573, -3.1738971546292305),
-                    new LatLng(55.923300515720484, -3.1740912795066833)
-            );
-        }
-        else if (currentFloor == 2 && Objects.equals(currentBuilding, "nucleus")) {
-            exitLocations = Arrays.asList(
-                    new LatLng(55.92303563792365, -3.174491263926029),
-                    new LatLng(55.92327647015123, -3.174472488462925)
-            );
-        }
-        else if (currentFloor == 3 && Objects.equals(currentBuilding, "nucleus")) {
-            exitLocations = Arrays.asList(
-            );
-        }
-        else if (currentFloor == 4 && Objects.equals(currentBuilding, "nucleus")) {
-            exitLocations = Arrays.asList(
-            );
-        }
+        List<LatLng> exitLocations = POILocationProvider.getLocations(
+                "emergencyExit", currentBuilding, currentFloor, context);
 
 
         if (exitLocations != null) {
             for (LatLng location : exitLocations) {
-                Marker marker = gMap.addMarker(new MarkerOptions()
-                        .position(location)
-                        .flat(true)
-                        .title("Emergency Exit")
-                        .icon(BitmapDescriptorFactory.fromBitmap(
-                                UtilFunctions.getBitmapFromVector(context, R.drawable.iso_emergency_exit)))
+                Marker marker = MarkerFactory.createMarker(
+                        gMap,
+                        location,
+                        "Emergency Exit",
+                        "emergencyExit",
+                        context
                 );
                 if (marker != null) {
                     emergencyExitMarkers.add(marker);
@@ -187,51 +131,17 @@ public class TrajectoryMapMaker {
         }
         liftMarkers.clear();
 
-        List<LatLng> liftLocations = null;
-        if (currentFloor == 0 && Objects.equals(currentBuilding, "nucleus")) {
-            liftLocations = Arrays.asList(
-                    new LatLng(55.92303883149652, -3.1743890047073364),
-                    new LatLng(55.923040334354255, -3.1743494421243668),
-                    new LatLng(55.92304277649792, -3.1743118911981583)
-            );
-        }
-        else if (currentFloor == 1 && Objects.equals(currentBuilding, "nucleus")) {
-            liftLocations = Arrays.asList(
-                    new LatLng(55.923027560061676, -3.1743665412068367),
-                    new LatLng(55.92303075363521, -3.17432664334774),
-                    new LatLng(55.923030565777935, -3.174288421869278)
-            );
-        }
-        else if (currentFloor == 2 && Objects.equals(currentBuilding, "nucleus")) {
-            liftLocations = Arrays.asList(
-                    new LatLng(55.92304484292707, -3.17434910684824),
-                    new LatLng(55.923045970070206, -3.1743139028549194),
-                    new LatLng(55.92304390364111, -3.1743836402893066)
-            );
-        }
-        else if (currentFloor == 3 && Objects.equals(currentBuilding, "nucleus")) {
-            liftLocations = Arrays.asList(
-                    new LatLng(55.92304484292707, -3.17434910684824),
-                    new LatLng(55.923045970070206, -3.1743139028549194),
-                    new LatLng(55.92304390364111, -3.1743836402893066)
-            );
-        }
-        else if (currentFloor == 4 && Objects.equals(currentBuilding, "nucleus")) {
-            liftLocations = Arrays.asList(
-                    new LatLng(55.92304484292707, -3.17434910684824),
-                    new LatLng(55.923045970070206, -3.1743139028549194),
-                    new LatLng(55.92304390364111, -3.1743836402893066)
-            );
-        }
+        List<LatLng> liftLocations = POILocationProvider.getLocations(
+                "lift", currentBuilding, currentFloor, context);
 
         if (liftLocations != null) {
             for (LatLng location : liftLocations) {
-                Marker marker = gMap.addMarker(new MarkerOptions()
-                        .position(location)
-                        .flat(true)
-                        .title("Lift")
-                        .icon(BitmapDescriptorFactory.fromBitmap(
-                                UtilFunctions.getBitmapFromVector(context, R.drawable.iso_lift)))
+                Marker marker = MarkerFactory.createMarker(
+                        gMap,
+                        location,
+                        "Lift",
+                        "lift",
+                        context
                 );
                 if (marker != null) {
                     liftMarkers.add(marker);
@@ -266,39 +176,17 @@ public class TrajectoryMapMaker {
         }
         accessibleToiletMarkers.clear();
 
-        List<LatLng> toiletLocations = null;
-
-        if (currentFloor == 0 && Objects.equals(currentBuilding, "nucleus")) {
-            toiletLocations = Arrays.asList(
-            );
-        }
-        else if (currentFloor == 1 && Objects.equals(currentBuilding, "nucleus")) {
-            toiletLocations = Arrays.asList(
-                    new LatLng(55.923273276597925, -3.1740865856409073),
-                    new LatLng(55.922906391930155, -3.174562007188797)
-            );
-        }
-        else if (currentFloor == 2 && Objects.equals(currentBuilding, "nucleus")) {
-            toiletLocations = Arrays.asList(
-            );
-        }
-        else if (currentFloor == 3 && Objects.equals(currentBuilding, "nucleus")) {
-            toiletLocations = Arrays.asList(
-            );
-        }
-        else if (currentFloor == 4 && Objects.equals(currentBuilding, "nucleus")) {
-            toiletLocations = Arrays.asList(
-            );
-        }
+        List<LatLng> toiletLocations = POILocationProvider.getLocations(
+                "accessibleToilet", currentBuilding, currentFloor, context);
 
         if (toiletLocations != null) {
             for (LatLng location : toiletLocations) {
-                Marker marker = gMap.addMarker(new MarkerOptions()
-                        .position(location)
-                        .flat(true)
-                        .title("Accessible Toilet")
-                        .icon(BitmapDescriptorFactory.fromBitmap(
-                                UtilFunctions.getBitmapFromVector(context, R.drawable.iso_accessible__toilet)))
+                Marker marker = MarkerFactory.createMarker(
+                        gMap,
+                        location,
+                        "Accessible Toilet",
+                        "accessibleToilet",
+                        context
                 );
                 if (marker != null) {
                     accessibleToiletMarkers.add(marker);
@@ -329,38 +217,17 @@ public class TrajectoryMapMaker {
         }
         drinkingWaterMarkers.clear();
 
-        List<LatLng> waterLocations = null;
-
-        if (currentFloor == 0 && Objects.equals(currentBuilding, "nucleus")) {
-            waterLocations = Arrays.asList(
-            );
-        }
-        else if (currentFloor == 1 && Objects.equals(currentBuilding, "nucleus")) {
-            waterLocations = Arrays.asList(
-                    new LatLng(55.922907331219456, -3.1744718179106712)
-            );
-        }
-        else if (currentFloor == 2 && Objects.equals(currentBuilding, "nucleus")) {
-            waterLocations = Arrays.asList(
-            );
-        }
-        else if (currentFloor == 3 && Objects.equals(currentBuilding, "nucleus")) {
-            waterLocations = Arrays.asList(
-            );
-        }
-        else if (currentFloor == 4 && Objects.equals(currentBuilding, "nucleus")) {
-            waterLocations = Arrays.asList(
-            );
-        }
+        List<LatLng> waterLocations = POILocationProvider.getLocations(
+                "drinkingWater", currentBuilding, currentFloor, context);
 
         if (waterLocations != null) {
             for (LatLng location : waterLocations) {
-                Marker marker = gMap.addMarker(new MarkerOptions()
-                        .position(location)
-                        .flat(true)
-                        .title("Drinking Water")
-                        .icon(BitmapDescriptorFactory.fromBitmap(
-                                UtilFunctions.getBitmapFromVector(context, R.drawable.iso_drinking_water)))
+                Marker marker = MarkerFactory.createMarker(
+                        gMap,
+                        location,
+                        "Drinking Water",
+                        "drinkingWater",
+                        context
                 );
                 if (marker != null) {
                     drinkingWaterMarkers.add(marker);
@@ -392,41 +259,17 @@ public class TrajectoryMapMaker {
         }
         toiletMarkers.clear();
 
-        List<LatLng> toiletLocations = null;
-
-        if (currentFloor == 0 && Objects.equals(currentBuilding, "nucleus")) {
-            toiletLocations = Arrays.asList(
-                    new LatLng(55.92308617148703, -3.174508698284626)
-            );
-        }
-        else if (currentFloor == 1 && Objects.equals(currentBuilding, "nucleus")) {
-            toiletLocations = Arrays.asList(
-                    new LatLng(55.9229417091921, -3.174556642770767)
-            );
-        }
-        else if (currentFloor == 2 && Objects.equals(currentBuilding, "nucleus")) {
-            toiletLocations = Arrays.asList(
-                    new LatLng(55.92308617148703, -3.174508698284626)
-            );
-        }
-        else if (currentFloor == 3 && Objects.equals(currentBuilding, "nucleus")) {
-            toiletLocations = Arrays.asList(
-                    new LatLng(55.92308617148703, -3.174508698284626)
-            );
-        }
-        else if (currentFloor == 4 && Objects.equals(currentBuilding, "nucleus")) {
-            toiletLocations = Arrays.asList(
-            );
-        }
+        List<LatLng> toiletLocations = POILocationProvider.getLocations(
+                "toilet", currentBuilding, currentFloor, context);
 
         if (toiletLocations != null) {
             for (LatLng location : toiletLocations) {
-                Marker marker = gMap.addMarker(new MarkerOptions()
-                        .position(location)
-                        .flat(true)
-                        .title("Toilet")
-                        .icon(BitmapDescriptorFactory.fromBitmap(
-                                UtilFunctions.getBitmapFromVector(context, R.drawable.iso_toilet_icon)))
+                Marker marker = MarkerFactory.createMarker(
+                        gMap,
+                        location,
+                        "Toilet",
+                        "toilet",
+                        context
                 );
                 if (marker != null) {
                     toiletMarkers.add(marker);
@@ -464,39 +307,17 @@ public class TrajectoryMapMaker {
         }
         accessibleRouteMarkers.clear();
 
-        List<LatLng> accessibleLocations = null;
-
-        if (currentFloor == 0 && Objects.equals(currentBuilding, "nucleus")) {
-            accessibleLocations = Arrays.asList(
-            );
-        }
-        else if (currentFloor == 1 && Objects.equals(currentBuilding, "nucleus")) {
-            accessibleLocations = Arrays.asList(
-                    new LatLng(55.92284627736777, -3.174579441547394),
-                    new LatLng(55.92327102232486, -3.1744134798645973)
-            );
-        }
-        else if (currentFloor == 2 && Objects.equals(currentBuilding, "nucleus")) {
-            accessibleLocations = Arrays.asList(
-            );
-        }
-        else if (currentFloor == 3 && Objects.equals(currentBuilding, "nucleus")) {
-            accessibleLocations = Arrays.asList(
-            );
-        }
-        else if (currentFloor == 4 && Objects.equals(currentBuilding, "nucleus")) {
-            accessibleLocations = Arrays.asList(
-            );
-        }
+        List<LatLng> accessibleLocations = POILocationProvider.getLocations(
+                "accessibleRoute", currentBuilding, currentFloor, context);
 
         if (accessibleLocations != null) {
             for (LatLng location : accessibleLocations) {
-                Marker marker = gMap.addMarker(new MarkerOptions()
-                        .position(location)
-                        .flat(true)
-                        .title("Accessible Route")
-                        .icon(BitmapDescriptorFactory.fromBitmap(
-                                UtilFunctions.getBitmapFromVector(context, R.drawable.iso_symbol_of_access)))
+                Marker marker = MarkerFactory.createMarker(
+                        gMap,
+                        location,
+                        "Accessible Route",
+                        "accessibleRoute",
+                        context
                 );
                 if (marker != null) {
                     accessibleRouteMarkers.add(marker);

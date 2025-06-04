@@ -7,7 +7,6 @@ import java.io.BufferedReader;
 import java.io.FileReader;
 import org.json.JSONObject;
 
-import android.os.Environment;
 
 import java.io.FileInputStream;
 import java.io.OutputStream;
@@ -22,16 +21,17 @@ import android.os.Handler;
 import android.os.Looper;
 import android.widget.Toast;
 
-import androidx.annotation.NonNull;
 import androidx.preference.PreferenceManager;
 
 import com.google.protobuf.util.JsonFormat;
-import com.openpositioning.PositionMe.BuildConfig;
 import com.openpositioning.PositionMe.Traj;
 import com.openpositioning.PositionMe.presentation.fragment.FilesFragment;
 import com.openpositioning.PositionMe.presentation.activity.MainActivity;
 import com.openpositioning.PositionMe.sensors.Observable;
 import com.openpositioning.PositionMe.sensors.Observer;
+import com.openpositioning.PositionMe.data.remote.ServerApi;
+import com.openpositioning.PositionMe.data.remote.ApiCallback;
+import com.openpositioning.PositionMe.data.remote.OkHttpServerApi;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -39,7 +39,6 @@ import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.file.Files;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -47,21 +46,10 @@ import java.util.List;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
-import okhttp3.Call;
-import okhttp3.Callback;
-import okhttp3.Headers;
-import okhttp3.MediaType;
-import okhttp3.MultipartBody;
-import okhttp3.OkHttp;
-import okhttp3.OkHttpClient;
-import okhttp3.Request;
-import okhttp3.RequestBody;
-import okhttp3.Response;
-import okhttp3.ResponseBody;
 
 /**
- * This class handles communications with the server through HTTPs. The class uses an
- * {@link OkHttpClient} for making requests to the server. The class includes methods for sending
+ * This class handles communications with the server through HTTPs using a pluggable
+ * {@link ServerApi} implementation. The class includes methods for sending
  * a recorded trajectory, uploading locally-stored trajectories, downloading trajectories from the
  * server and requesting information about the uploaded trajectories.
  *
@@ -85,20 +73,8 @@ public class ServerCommunications implements Observable {
     private boolean success;
     private List<Observer> observers;
 
-    // Static constants necessary for communications
-    private static final String userKey = BuildConfig.OPENPOSITIONING_API_KEY;
-    private static final String masterKey = BuildConfig.OPENPOSITIONING_MASTER_KEY;
-    private static final String uploadURL =
-            "https://openpositioning.org/api/live/trajectory/upload/" + userKey
-                    + "/?key=" + masterKey;
-    private static final String downloadURL =
-            "https://openpositioning.org/api/live/trajectory/download/" + userKey
-                    + "?skip=0&limit=30&key=" + masterKey;
-    private static final String infoRequestURL =
-            "https://openpositioning.org/api/live/users/trajectories/" + userKey
-                    + "?key=" + masterKey;
-    private static final String PROTOCOL_CONTENT_TYPE = "multipart/form-data";
-    private static final String PROTOCOL_ACCEPT_TYPE = "application/json";
+    // API client handling server requests
+    private final ServerApi serverApi;
 
 
 
@@ -116,7 +92,7 @@ public class ServerCommunications implements Observable {
         this.isWifiConn = false;
         this.isMobileConn = false;
         checkNetworkStatus();
-
+        this.serverApi = new OkHttpServerApi();
         this.observers = new ArrayList<>();
     }
 
@@ -170,91 +146,38 @@ public class ServerCommunications implements Observable {
         boolean enableMobileData = this.settings.getBoolean("mobile_sync", false);
         // Check if device is connected to WiFi or to mobile data with enabled preference
         if(this.isWifiConn || (enableMobileData && isMobileConn)) {
-            // Instantiate client for HTTP requests
-            OkHttpClient client = new OkHttpClient();
+            serverApi.uploadFile(file, new ApiCallback<String>() {
+                @Override
+                public void onSuccess(String result) {
+                    System.out.println("Successful post response: " + result);
 
-            // Creaet a equest body with a file to upload in multipart/form-data format
-            RequestBody requestBody = new MultipartBody.Builder().setType(MultipartBody.FORM)
-                    .addFormDataPart("file", file.getName(),
-                            RequestBody.create(MediaType.parse("text/plain"), file))
-                    .build();
+                    System.out.println("Get file: " + file.getName());
+                    String originalPath = file.getAbsolutePath();
+                    System.out.println("Original trajectory file saved at: " + originalPath);
 
-            // Create a POST request with the required headers
-            Request request = new Request.Builder().url(uploadURL).post(requestBody)
-                    .addHeader("accept", PROTOCOL_ACCEPT_TYPE)
-                    .addHeader("Content-Type", PROTOCOL_CONTENT_TYPE).build();
+                    File downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                    File downloadFile = new File(downloadsDir, file.getName());
+                    try {
+                        copyFile(file, downloadFile);
+                        System.out.println("Trajectory file copied to Downloads: " + downloadFile.getAbsolutePath());
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                        System.err.println("Failed to copy file to Downloads: " + e.getMessage());
+                    }
 
-            // Enqueue the request to be executed asynchronously and handle the response
-            client.newCall(request).enqueue(new Callback() {
-
-                // Handle failure to get response from the server
-                @Override public void onFailure(Call call, IOException e) {
-                    e.printStackTrace();
-                    System.err.println("Failure to get response");
-                    // Delete the local file and set success to false
-                    //file.delete();
-                    success = false;
+                    success = file.delete();
                     notifyObservers(1);
                 }
 
-                private void copyFile(File src, File dst) throws IOException {
-                    try (InputStream in = new FileInputStream(src);
-                         OutputStream out = new FileOutputStream(dst)) {
-                        byte[] buf = new byte[1024];
-                        int len;
-                        while ((len = in.read(buf)) > 0) {
-                            out.write(buf, 0, len);
-                        }
-                    }
-                }
-
-                // Process the server's response
-                @Override public void onResponse(Call call, Response response) throws IOException {
-                    try (ResponseBody responseBody = response.body()) {
-                        // If the response is unsuccessful, delete the local file and throw an
-                        // exception
-                        if (!response.isSuccessful()) {
-                            //file.delete();
-//                            System.err.println("POST error response: " + responseBody.string());
-
-                            String errorBody = responseBody.string();
-                            infoResponse = "Upload failed: " + errorBody;
-                            new Handler(Looper.getMainLooper()).post(() ->
-                                    Toast.makeText(context, infoResponse, Toast.LENGTH_SHORT).show()); // show error message to users
-
-                            System.err.println("POST error response: " + errorBody);
-                            success = false;
-                            notifyObservers(1);
-                            throw new IOException("Unexpected code " + response);
-                        }
-
-                        // Print the response headers
-                        Headers responseHeaders = response.headers();
-                        for (int i = 0, size = responseHeaders.size(); i < size; i++) {
-                            System.out.println(responseHeaders.name(i) + ": " + responseHeaders.value(i));
-                        }
-                        // Print a confirmation of a successful POST to API
-                        System.out.println("Successful post response: " + responseBody.string());
-
-                        System.out.println("Get file: " + file.getName());
-                        String originalPath = file.getAbsolutePath();
-                        System.out.println("Original trajectory file saved at: " + originalPath);
-
-                        // Copy the file to the Downloads folder
-                        File downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-                        File downloadFile = new File(downloadsDir, file.getName());
-                        try {
-                            copyFile(file, downloadFile);
-                            System.out.println("Trajectory file copied to Downloads: " + downloadFile.getAbsolutePath());
-                        } catch (IOException e) {
-                            e.printStackTrace();
-                            System.err.println("Failed to copy file to Downloads: " + e.getMessage());
-                        }
-
-                        // Delete local file and set success to true
-                        success = file.delete();
-                        notifyObservers(1);
-                    }
+                @Override
+                public void onError(Exception e) {
+                    e.printStackTrace();
+                    System.err.println("Failure to get response");
+                    success = false;
+                    infoResponse = "Upload failed: " + e.getMessage();
+                    new Handler(Looper.getMainLooper()).post(() ->
+                            Toast.makeText(context, infoResponse, Toast.LENGTH_SHORT).show());
+                    notifyObservers(1);
                 }
             });
         }
@@ -268,88 +191,29 @@ public class ServerCommunications implements Observable {
     }
 
     /**
-     * Uploads a local trajectory file to the API server in the specified format.
-     * {@link OkHttp} library is used for the asynchronous POST request.
+     * Uploads a local trajectory file to the API server in the specified format
+     * using the configured {@link ServerApi}.
      *
      * @param localTrajectory the File object of the local trajectory to be uploaded
      */
     public void uploadLocalTrajectory(File localTrajectory) {
-
-        // Instantiate client for HTTP requests
-        OkHttpClient client = new OkHttpClient();
-
-        // robustness improvement
-        RequestBody fileRequestBody;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            try {
-                byte[] fileBytes = Files.readAllBytes(localTrajectory.toPath());
-                fileRequestBody = RequestBody.create(MediaType.parse("text/plain"), fileBytes);
-            } catch (IOException e) {
-                e.printStackTrace();
-                // if failed, use File object to construct RequestBody
-                fileRequestBody = RequestBody.create(MediaType.parse("text/plain"), localTrajectory);
-            }
-        } else {
-            fileRequestBody = RequestBody.create(MediaType.parse("text/plain"), localTrajectory);
-        }
-
-        // Create request body with a file to upload in multipart/form-data format
-        RequestBody requestBody = new MultipartBody.Builder().setType(MultipartBody.FORM)
-                .addFormDataPart("file", localTrajectory.getName(), fileRequestBody)
-                .build();
-
-        // Create a POST request with the required headers
-        okhttp3.Request request = new okhttp3.Request.Builder().url(uploadURL).post(requestBody)
-                .addHeader("accept", PROTOCOL_ACCEPT_TYPE)
-                .addHeader("Content-Type", PROTOCOL_CONTENT_TYPE).build();
-
-        // Enqueue the request to be executed asynchronously and handle the response
-        client.newCall(request).enqueue(new okhttp3.Callback() {
+        serverApi.uploadFile(localTrajectory, new ApiCallback<String>() {
             @Override
-            public void onFailure(Call call, IOException e) {
-                // Print error message, set success to false and notify observers
+            public void onSuccess(String result) {
+                System.out.println("UPLOAD SUCCESSFUL: " + result);
+                success = localTrajectory.delete();
+                notifyObservers(1);
+            }
+
+            @Override
+            public void onError(Exception e) {
                 e.printStackTrace();
-//                localTrajectory.delete();
                 success = false;
                 System.err.println("UPLOAD: Failure to get response");
-                notifyObservers(1);
-                infoResponse = "Upload failed: " + e.getMessage(); // Store error message
+                infoResponse = "Upload failed: " + e.getMessage();
                 new Handler(Looper.getMainLooper()).post(() ->
-                        Toast.makeText(context, infoResponse, Toast.LENGTH_SHORT).show()); // show error message to users
-            }
-
-            @Override
-            public void onResponse(Call call, Response response) throws IOException {
-                try (ResponseBody responseBody = response.body()) {
-                    if (!response.isSuccessful()) {
-                        // Print error message, set success to false and throw an exception
-                        success = false;
-//                        System.err.println("UPLOAD unsuccessful: " + responseBody.string());
-                        notifyObservers(1);
-//                        localTrajectory.delete();
-                        assert responseBody != null;
-                        String errorBody = responseBody.string();
-                        System.err.println("UPLOAD unsuccessful: " + errorBody);
-                        infoResponse = "Upload failed: " + errorBody;
-                        new Handler(Looper.getMainLooper()).post(() ->
-                                Toast.makeText(context, infoResponse, Toast.LENGTH_SHORT).show());
-                        throw new IOException("UPLOAD failed with code " + response);
-                    }
-
-                    // Print the response headers
-                    Headers responseHeaders = response.headers();
-                    for (int i = 0, size = responseHeaders.size(); i < size; i++) {
-                        System.out.println(responseHeaders.name(i) + ": " + responseHeaders.value(i));
-                    }
-
-                    // Print a confirmation of a successful POST to API
-                    assert responseBody != null;
-                    System.out.println("UPLOAD SUCCESSFUL: " + responseBody.string());
-
-                    // Delete local file, set success to true and notify observers
-                    success = localTrajectory.delete();
-                    notifyObservers(1);
-                }
+                        Toast.makeText(context, infoResponse, Toast.LENGTH_SHORT).show());
+                notifyObservers(1);
             }
         });
     }
@@ -474,30 +338,10 @@ public class ServerCommunications implements Observable {
     public void downloadTrajectory(int position, String id, String dateSubmitted) {
         loadDownloadRecords();  // Load existing records from app-specific directory
 
-        // Initialise OkHttp client
-        OkHttpClient client = new OkHttpClient();
-
-        // Create GET request with required header
-        okhttp3.Request request = new okhttp3.Request.Builder()
-                .url(downloadURL)
-                .addHeader("accept", PROTOCOL_ACCEPT_TYPE)
-                .get()
-                .build();
-
-        // Enqueue the GET request for asynchronous execution
-        client.newCall(request).enqueue(new okhttp3.Callback() {
+        serverApi.downloadZip(new ApiCallback<InputStream>() {
             @Override
-            public void onFailure(Call call, IOException e) {
-                e.printStackTrace();
-            }
-
-            @Override
-            public void onResponse(Call call, Response response) throws IOException {
-                try (ResponseBody responseBody = response.body()) {
-                    if (!response.isSuccessful()) throw new IOException("Unexpected code " + response);
-
-                    // Extract the nth entry from the zip
-                    InputStream inputStream = responseBody.byteStream();
+            public void onSuccess(InputStream inputStream) {
+                try {
                     ZipInputStream zipInputStream = new ZipInputStream(inputStream);
 
                     java.util.zip.ZipEntry zipEntry;
@@ -557,7 +401,14 @@ public class ServerCommunications implements Observable {
                     // Save the download record
                     saveDownloadRecord(startTimestamp, fileName, id, dateSubmitted);
                     loadDownloadRecords();
+                } catch (Exception e) {
+                    e.printStackTrace();
                 }
+            }
+
+            @Override
+            public void onError(Exception e) {
+                e.printStackTrace();
             }
         });
 
@@ -569,35 +420,17 @@ public class ServerCommunications implements Observable {
      *
      */
     public void sendInfoRequest() {
-        // Create a new OkHttpclient
-        OkHttpClient client = new OkHttpClient();
-
-        // Create GET info request with appropriate URL and header
-        okhttp3.Request request = new okhttp3.Request.Builder()
-                .url(infoRequestURL)
-                .addHeader("accept", PROTOCOL_ACCEPT_TYPE)
-                .get()
-                .build();
-
-        // Enqueue the GET request for asynchronous execution
-        client.newCall(request).enqueue(new okhttp3.Callback() {
-            @Override public void onFailure(Call call, IOException e) {
-                e.printStackTrace();
+        serverApi.fetchInfo(new ApiCallback<String>() {
+            @Override
+            public void onSuccess(String result) {
+                infoResponse = result;
+                System.out.println("Response received");
+                notifyObservers(0);
             }
 
-            @Override public void onResponse(Call call, Response response) throws IOException {
-                try (ResponseBody responseBody = response.body()) {
-                    // Check if the response is successful
-                    if (!response.isSuccessful()) throw new IOException("Unexpected code " +
-                            response);
-
-                    // Get the requested information from the response body and save it in a string
-                    // TODO: add printing to the screen somewhere
-                    infoResponse =  responseBody.string();
-                    // Print a message in the console and notify observers
-                    System.out.println("Response received");
-                    notifyObservers(0);
-                }
+            @Override
+            public void onError(Exception e) {
+                e.printStackTrace();
             }
         });
     }
@@ -617,6 +450,17 @@ public class ServerCommunications implements Observable {
         } else {
             isWifiConn = false;
             isMobileConn = false;
+        }
+    }
+
+    private void copyFile(File src, File dst) throws IOException {
+        try (InputStream in = new FileInputStream(src);
+             OutputStream out = new FileOutputStream(dst)) {
+            byte[] buf = new byte[1024];
+            int len;
+            while ((len = in.read(buf)) > 0) {
+                out.write(buf, 0, len);
+            }
         }
     }
 

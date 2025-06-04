@@ -17,52 +17,39 @@ import android.hardware.SensorManager;
  */
 public class MovementSensor {
     // Application context for permissions and hardware access
-    protected Context context;
+    private final Context context;
     // Sensor Manager from the android hardware manager
-    protected SensorManager sensorManager;
+    private final SensorManager sensorManager;
     // The Sensor instance determined by the type upon initialisation
-    protected Sensor sensor;
+    private final Sensor sensor;
     // Information about the sensor stored in a SensorInfo object
-    protected SensorInfo sensorInfo;
+    private final SensorInfo sensorInfo;
 
 
     /**
-     * Public default constructor for the Movement Sensor class.
-     *
-     * It calls the superclass constructor with context, and then initialises local properties.
-     *
-     * @param context       Application context used to check permissions and access devices.
-     * @param sensorType    Type of the sensor to be created, using Sensor.TYPE constants.
-     *
-     * @see SensorInfo objects holding physical sensors properties.
+     * Private constructor used by {@link MovementSensorFactory}.
      */
-    public MovementSensor(Context context, int sensorType) {
+    MovementSensor(Context context, SensorManager sensorManager, Sensor sensor, SensorInfo sensorInfo) {
         this.context = context;
+        this.sensorManager = sensorManager;
+        this.sensor = sensor;
+        this.sensorInfo = sensorInfo;
+    }
 
-        this.sensorManager = (SensorManager) context.getSystemService(Context.SENSOR_SERVICE);
-        this.sensor = sensorManager.getDefaultSensor(sensorType);
+    public Context getContext() {
+        return context;
+    }
 
-        if (sensor != null) {
-            this.sensorInfo = new SensorInfo(
-                    sensor.getName(),
-                    sensor.getVendor(),
-                    sensor.getResolution(),
-                    sensor.getPower(),
-                    sensor.getVersion(),
-                    sensor.getType()
-            );
-            System.err.println(sensorInfo);
-        } else {
-            this.sensorInfo = new SensorInfo(
-                    "Not available",
-                    "-",
-                    -1.0f,
-                    0.0f,
-                    0,
-                    0
-            );
+    public SensorManager getSensorManager() {
+        return sensorManager;
+    }
 
-        }
+    public Sensor getSensor() {
+        return sensor;
+    }
+
+    public SensorInfo getSensorInfo() {
+        return sensorInfo;
     }
 
 }

@@ -7,10 +7,25 @@ import com.openpositioning.PositionMe.R;
 import com.openpositioning.PositionMe.presentation.fragment.IndoorMapFragment;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 
-public class NucleusBuildingManager {
+/**
+ * Building manager providing overlay data for the Nucleus building.
+ */
+public class NucleusBuildingManager implements BuildingOverlayProvider {
     private IndoorMapFragment indoorMapFragment;
     private ArrayList<LatLng> buildingPolygon;
+    private final List<Integer> floorResources = Arrays.asList(
+            R.drawable.nucleuslg,
+            R.drawable.nucleusg,
+            R.drawable.nucleus1,
+            R.drawable.nucleus2,
+            R.drawable.nucleus3
+    );
+
+    private static final float FLOOR_HEIGHT = 4.2f;
+    private static final int DEFAULT_FLOOR = 1;
 
     public NucleusBuildingManager(GoogleMap map) {
         // The nuclear building has 5 floors
@@ -41,6 +56,37 @@ public class NucleusBuildingManager {
 
     public IndoorMapFragment getIndoorMapManager() {
         return indoorMapFragment;
+    }
+
+    // --- Implementation of BuildingOverlayProvider ---
+    @Override
+    public String getName() {
+        return "nucleus";
+    }
+
+    @Override
+    public boolean contains(LatLng point) {
+        return isPointInBuilding(point);
+    }
+
+    @Override
+    public List<Integer> getFloorResources() {
+        return floorResources;
+    }
+
+    @Override
+    public LatLngBounds getBounds() {
+        return new LatLngBounds(buildingPolygon.get(0), buildingPolygon.get(2));
+    }
+
+    @Override
+    public float getFloorHeight() {
+        return FLOOR_HEIGHT;
+    }
+
+    @Override
+    public int getDefaultFloor() {
+        return DEFAULT_FLOOR;
     }
 
     /**

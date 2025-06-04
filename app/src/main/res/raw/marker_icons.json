@@ -1,0 +1,9 @@
+{
+  "medicalRoom": "iso_first_aid_icon",
+  "emergencyExit": "iso_emergency_exit",
+  "lift": "iso_lift",
+  "accessibleToilet": "iso_accessible__toilet",
+  "drinkingWater": "iso_drinking_water",
+  "toilet": "iso_toilet_icon",
+  "accessibleRoute": "iso_symbol_of_access"
+}
