@@ -84,4 +84,12 @@ public class SensorInfo {
                 ", type=" + type +
                 '}';
     }
+
+    /**
+     * Convenience factory returning a placeholder instance when a sensor is not
+     * available on the device.
+     */
+    public static SensorInfo unavailable() {
+        return new SensorInfo("Not available", "-", -1.0f, 0.0f, 0, 0);
+    }
 }

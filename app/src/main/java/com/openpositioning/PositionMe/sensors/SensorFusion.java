@@ -111,6 +111,7 @@ public class SensorFusion implements SensorEventListener, Observer {
     private MovementSensor rotationSensor;
     private MovementSensor gravitySensor;
     private MovementSensor linearAccelerationSensor;
+    private final MovementSensorFactory sensorFactory = new MovementSensorFactory();
     // Other data recording
     private WifiDataProcessor wifiProcessor;
     private GNSSDataProcessor gnssProcessor;
@@ -270,17 +271,17 @@ public class SensorFusion implements SensorEventListener, Observer {
     public void setContext(Context context) {
         this.appContext = context.getApplicationContext(); // store app context for later use
 
-        // Initialise data collection devices (unchanged)...
-        this.accelerometerSensor = new MovementSensor(context, Sensor.TYPE_ACCELEROMETER);
-        this.barometerSensor = new MovementSensor(context, Sensor.TYPE_PRESSURE);
-        this.gyroscopeSensor = new MovementSensor(context, Sensor.TYPE_GYROSCOPE);
-        this.lightSensor = new MovementSensor(context, Sensor.TYPE_LIGHT);
-        this.proximitySensor = new MovementSensor(context, Sensor.TYPE_PROXIMITY);
-        this.magnetometerSensor = new MovementSensor(context, Sensor.TYPE_MAGNETIC_FIELD);
-        this.stepDetectionSensor = new MovementSensor(context, Sensor.TYPE_STEP_DETECTOR);
-        this.rotationSensor = new MovementSensor(context, Sensor.TYPE_ROTATION_VECTOR);
-        this.gravitySensor = new MovementSensor(context, Sensor.TYPE_GRAVITY);
-        this.linearAccelerationSensor = new MovementSensor(context, Sensor.TYPE_LINEAR_ACCELERATION);
+        // Initialise data collection devices via factory
+        this.accelerometerSensor = sensorFactory.create(context, Sensor.TYPE_ACCELEROMETER);
+        this.barometerSensor = sensorFactory.create(context, Sensor.TYPE_PRESSURE);
+        this.gyroscopeSensor = sensorFactory.create(context, Sensor.TYPE_GYROSCOPE);
+        this.lightSensor = sensorFactory.create(context, Sensor.TYPE_LIGHT);
+        this.proximitySensor = sensorFactory.create(context, Sensor.TYPE_PROXIMITY);
+        this.magnetometerSensor = sensorFactory.create(context, Sensor.TYPE_MAGNETIC_FIELD);
+        this.stepDetectionSensor = sensorFactory.create(context, Sensor.TYPE_STEP_DETECTOR);
+        this.rotationSensor = sensorFactory.create(context, Sensor.TYPE_ROTATION_VECTOR);
+        this.gravitySensor = sensorFactory.create(context, Sensor.TYPE_GRAVITY);
+        this.linearAccelerationSensor = sensorFactory.create(context, Sensor.TYPE_LINEAR_ACCELERATION);
         // Listener based devices
         this.wifiProcessor = new WifiDataProcessor(context);
         wifiProcessor.registerObserver(this);
@@ -1011,12 +1012,12 @@ public class SensorFusion implements SensorEventListener, Observer {
      */
     public List<SensorInfo> getSensorInfos() {
         List<SensorInfo> sensorInfoList = new ArrayList<>();
-        sensorInfoList.add(this.accelerometerSensor.sensorInfo);
-        sensorInfoList.add(this.barometerSensor.sensorInfo);
-        sensorInfoList.add(this.gyroscopeSensor.sensorInfo);
-        sensorInfoList.add(this.lightSensor.sensorInfo);
-        sensorInfoList.add(this.proximitySensor.sensorInfo);
-        sensorInfoList.add(this.magnetometerSensor.sensorInfo);
+        sensorInfoList.add(this.accelerometerSensor.getSensorInfo());
+        sensorInfoList.add(this.barometerSensor.getSensorInfo());
+        sensorInfoList.add(this.gyroscopeSensor.getSensorInfo());
+        sensorInfoList.add(this.lightSensor.getSensorInfo());
+        sensorInfoList.add(this.proximitySensor.getSensorInfo());
+        sensorInfoList.add(this.magnetometerSensor.getSensorInfo());
         return sensorInfoList;
     }
 
@@ -1082,16 +1083,16 @@ public class SensorFusion implements SensorEventListener, Observer {
      * @see GNSSDataProcessor handles location data.
      */
     public void resumeListening() {
-        accelerometerSensor.sensorManager.registerListener(this, accelerometerSensor.sensor, 10000, (int) maxReportLatencyNs);
-        accelerometerSensor.sensorManager.registerListener(this, linearAccelerationSensor.sensor, 10000, (int) maxReportLatencyNs);
-        accelerometerSensor.sensorManager.registerListener(this, gravitySensor.sensor, 10000, (int) maxReportLatencyNs);
-        barometerSensor.sensorManager.registerListener(this, barometerSensor.sensor, (int) 1e6);
-        gyroscopeSensor.sensorManager.registerListener(this, gyroscopeSensor.sensor, 10000, (int) maxReportLatencyNs);
-        lightSensor.sensorManager.registerListener(this, lightSensor.sensor, (int) 1e6);
-        proximitySensor.sensorManager.registerListener(this, proximitySensor.sensor, (int) 1e6);
-        magnetometerSensor.sensorManager.registerListener(this, magnetometerSensor.sensor, 10000, (int) maxReportLatencyNs);
-        stepDetectionSensor.sensorManager.registerListener(this, stepDetectionSensor.sensor, SensorManager.SENSOR_DELAY_NORMAL);
-        rotationSensor.sensorManager.registerListener(this, rotationSensor.sensor, (int) 1e6);
+        accelerometerSensor.getSensorManager().registerListener(this, accelerometerSensor.getSensor(), 10000, (int) maxReportLatencyNs);
+        accelerometerSensor.getSensorManager().registerListener(this, linearAccelerationSensor.getSensor(), 10000, (int) maxReportLatencyNs);
+        accelerometerSensor.getSensorManager().registerListener(this, gravitySensor.getSensor(), 10000, (int) maxReportLatencyNs);
+        barometerSensor.getSensorManager().registerListener(this, barometerSensor.getSensor(), (int) 1e6);
+        gyroscopeSensor.getSensorManager().registerListener(this, gyroscopeSensor.getSensor(), 10000, (int) maxReportLatencyNs);
+        lightSensor.getSensorManager().registerListener(this, lightSensor.getSensor(), (int) 1e6);
+        proximitySensor.getSensorManager().registerListener(this, proximitySensor.getSensor(), (int) 1e6);
+        magnetometerSensor.getSensorManager().registerListener(this, magnetometerSensor.getSensor(), 10000, (int) maxReportLatencyNs);
+        stepDetectionSensor.getSensorManager().registerListener(this, stepDetectionSensor.getSensor(), SensorManager.SENSOR_DELAY_NORMAL);
+        rotationSensor.getSensorManager().registerListener(this, rotationSensor.getSensor(), (int) 1e6);
         wifiProcessor.startListening();
         gnssProcessor.startLocationUpdates();
     }
@@ -1108,16 +1109,16 @@ public class SensorFusion implements SensorEventListener, Observer {
     public void stopListening() {
         if(!saveRecording) {
             // Unregister sensor-manager based devices
-            accelerometerSensor.sensorManager.unregisterListener(this);
-            barometerSensor.sensorManager.unregisterListener(this);
-            gyroscopeSensor.sensorManager.unregisterListener(this);
-            lightSensor.sensorManager.unregisterListener(this);
-            proximitySensor.sensorManager.unregisterListener(this);
-            magnetometerSensor.sensorManager.unregisterListener(this);
-            stepDetectionSensor.sensorManager.unregisterListener(this);
-            rotationSensor.sensorManager.unregisterListener(this);
-            linearAccelerationSensor.sensorManager.unregisterListener(this);
-            gravitySensor.sensorManager.unregisterListener(this);
+            accelerometerSensor.getSensorManager().unregisterListener(this);
+            barometerSensor.getSensorManager().unregisterListener(this);
+            gyroscopeSensor.getSensorManager().unregisterListener(this);
+            lightSensor.getSensorManager().unregisterListener(this);
+            proximitySensor.getSensorManager().unregisterListener(this);
+            magnetometerSensor.getSensorManager().unregisterListener(this);
+            stepDetectionSensor.getSensorManager().unregisterListener(this);
+            rotationSensor.getSensorManager().unregisterListener(this);
+            linearAccelerationSensor.getSensorManager().unregisterListener(this);
+            gravitySensor.getSensorManager().unregisterListener(this);
             //The app often crashes here because the scan receiver stops after it has found the list.
             // It will only unregister one if there is to unregister
             try {
@@ -1398,7 +1399,7 @@ public class SensorFusion implements SensorEventListener, Observer {
             if (counter == 99) {
                 counter = 0;
                 // Store pressure and light data
-                if (barometerSensor.sensor != null) {
+                if (barometerSensor.getSensor() != null) {
                     trajectory.addPressureData(Traj.Pressure_Sample.newBuilder()
                                     .setPressure(pressure)
                                     .setRelativeTimestamp(SystemClock.uptimeMillis() - bootTime))

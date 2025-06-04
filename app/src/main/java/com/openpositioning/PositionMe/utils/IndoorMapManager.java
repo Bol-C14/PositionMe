@@ -10,8 +10,12 @@ import com.google.android.gms.maps.model.LatLng;
 import com.google.android.gms.maps.model.LatLngBounds;
 import com.google.android.gms.maps.model.PolylineOptions;
 import com.openpositioning.PositionMe.R;
-import java.util.Arrays;
+import com.openpositioning.PositionMe.utils.BuildingOverlayProvider;
+import com.openpositioning.PositionMe.utils.NucleusBuildingManager;
+import com.openpositioning.PositionMe.utils.LibraryBuildingManager;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Class used to manage indoor floor map overlays
@@ -36,30 +40,14 @@ public class IndoorMapManager {
     // NEW: Track which building's overlay is currently shown ("nucleus", "library", or empty)
     private String currentBuilding = "";
 
-    // Indoor map resource lists for Nucleus and Library
-    private final List<Integer> NUCLEUS_MAPS = Arrays.asList(
-            R.drawable.nucleuslg, R.drawable.nucleusg, R.drawable.nucleus1,
-            R.drawable.nucleus2, R.drawable.nucleus3);
-    private final List<Integer> LIBRARY_MAPS = Arrays.asList(
-            R.drawable.libraryg, R.drawable.library1, R.drawable.library2,
-            R.drawable.library3);
-
-    // Building bounds for overlay positioning
-    LatLngBounds NUCLEUS = new LatLngBounds(
-            BuildingPolygon.NUCLEUS_SW,
-            BuildingPolygon.NUCLEUS_NE
-    );
-    LatLngBounds LIBRARY = new LatLngBounds(
-            BuildingPolygon.LIBRARY_SW,
-            BuildingPolygon.LIBRARY_NE
-    );
-
-    // Average floor heights for each building
-    public static final float NUCLEUS_FLOOR_HEIGHT = 4.2F;
-    public static final float LIBRARY_FLOOR_HEIGHT = 3.6F;
+    // Building overlay providers indexed by building name
+    private final Map<String, BuildingOverlayProvider> providers = new HashMap<>();
+    private BuildingOverlayProvider currentProvider;
 
     public IndoorMapManager(GoogleMap map) {
         this.gMap = map;
+        providers.put("nucleus", new NucleusBuildingManager(map));
+        providers.put("library", new LibraryBuildingManager(map));
     }
 
     /**
@@ -93,20 +81,18 @@ public class IndoorMapManager {
      * @param autoFloor True if this change comes from an auto-floor feature.
      */
     public void setCurrentFloor(int newFloor, boolean autoFloor) {
-        if ("nucleus".equals(currentBuilding)) {
-            // Special case for Nucleus: auto-floor adds a bias (e.g., lower-ground is floor 0)
-            if (autoFloor) {
-                newFloor += 1;
-            }
-            if (newFloor >= 0 && newFloor < NUCLEUS_MAPS.size() && newFloor != this.currentFloor) {
-                groundOverlay.setImage(BitmapDescriptorFactory.fromResource(NUCLEUS_MAPS.get(newFloor)));
-                this.currentFloor = newFloor;
-            }
-        } else if ("library".equals(currentBuilding)) {
-            if (newFloor >= 0 && newFloor < LIBRARY_MAPS.size() && newFloor != this.currentFloor) {
-                groundOverlay.setImage(BitmapDescriptorFactory.fromResource(LIBRARY_MAPS.get(newFloor)));
-                this.currentFloor = newFloor;
-            }
+        if (currentProvider == null) {
+            return;
+        }
+
+        if ("nucleus".equals(currentProvider.getName()) && autoFloor) {
+            newFloor += 1;
+        }
+
+        List<Integer> resources = currentProvider.getFloorResources();
+        if (newFloor >= 0 && newFloor < resources.size() && newFloor != this.currentFloor) {
+            groundOverlay.setImage(BitmapDescriptorFactory.fromResource(resources.get(newFloor)));
+            this.currentFloor = newFloor;
         }
     }
 
@@ -124,42 +110,32 @@ public class IndoorMapManager {
      */
     private void setBuildingOverlay() {
         try {
-            if (BuildingPolygon.inNucleus(currentLocation)) {
-                // If we're in Nucleus but either no overlay is set or a different building's overlay is active
-                if (!isIndoorMapSet || !"nucleus".equals(currentBuilding)) {
-                    // Remove existing overlay if present
-                    if (isIndoorMapSet && groundOverlay != null) {
-                        groundOverlay.remove();
+            for (BuildingOverlayProvider provider : providers.values()) {
+                if (provider.contains(currentLocation)) {
+                    if (!isIndoorMapSet || !provider.getName().equals(currentBuilding)) {
+                        if (isIndoorMapSet && groundOverlay != null) {
+                            groundOverlay.remove();
+                        }
+                        groundOverlay = gMap.addGroundOverlay(new GroundOverlayOptions()
+                                .image(BitmapDescriptorFactory.fromResource(provider.getFloorResources().get(provider.getDefaultFloor())))
+                                .positionFromBounds(provider.getBounds()));
+                        isIndoorMapSet = true;
+                        currentFloor = provider.getDefaultFloor();
+                        floorHeight = provider.getFloorHeight();
+                        currentBuilding = provider.getName();
+                        currentProvider = provider;
                     }
-                    groundOverlay = gMap.addGroundOverlay(new GroundOverlayOptions()
-                            .image(BitmapDescriptorFactory.fromResource(R.drawable.nucleusg))
-                            .positionFromBounds(NUCLEUS));
-                    isIndoorMapSet = true;
-                    currentFloor = 1; // Default floor for Nucleus
-                    floorHeight = NUCLEUS_FLOOR_HEIGHT;
-                    currentBuilding = "nucleus";
+                    return;
                 }
-            } else if (BuildingPolygon.inLibrary(currentLocation)) {
-                if (!isIndoorMapSet || !"library".equals(currentBuilding)) {
-                    if (isIndoorMapSet && groundOverlay != null) {
-                        groundOverlay.remove();
-                    }
-                    groundOverlay = gMap.addGroundOverlay(new GroundOverlayOptions()
-                            .image(BitmapDescriptorFactory.fromResource(R.drawable.libraryg))
-                            .positionFromBounds(LIBRARY));
-                    isIndoorMapSet = true;
-                    currentFloor = 0; // Default floor for Library
-                    floorHeight = LIBRARY_FLOOR_HEIGHT;
-                    currentBuilding = "library";
-                }
-            } else {
-                // If the user is no longer in any building with an indoor map
-                if (isIndoorMapSet && groundOverlay != null) {
-                    groundOverlay.remove();
-                    isIndoorMapSet = false;
-                    currentFloor = 0;
-                    currentBuilding = "";
-                }
+            }
+
+            // Not inside any building
+            if (isIndoorMapSet && groundOverlay != null) {
+                groundOverlay.remove();
+                isIndoorMapSet = false;
+                currentFloor = 0;
+                currentBuilding = "";
+                currentProvider = null;
             }
         } catch (Exception ex) {
             Log.e("Error with overlay, Exception:", ex.toString());

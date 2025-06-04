@@ -14,13 +14,14 @@ import java.util.List;
 public class SensorFusionUtils {
     // but now a static helper taking exactly what it needs.
     public static Traj.Sensor_Info.Builder createInfoBuilder(MovementSensor sensor) {
+        SensorInfo info = sensor.getSensorInfo();
         return Traj.Sensor_Info.newBuilder()
-                .setName(sensor.sensorInfo.getName())
-                .setVendor(sensor.sensorInfo.getVendor())
-                .setResolution(sensor.sensorInfo.getResolution())
-                .setPower(sensor.sensorInfo.getPower())
-                .setVersion(sensor.sensorInfo.getVersion())
-                .setType(sensor.sensorInfo.getType());
+                .setName(info.getName())
+                .setVendor(info.getVendor())
+                .setResolution(info.getResolution())
+                .setPower(info.getPower())
+                .setVersion(info.getVersion())
+                .setType(info.getType());
     }
 
     // Move your old getAllSensorData code here.
