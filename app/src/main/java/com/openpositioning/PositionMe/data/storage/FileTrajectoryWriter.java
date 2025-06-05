@@ -1,4 +1,4 @@
-package com.openpositioning.PositionMe.data.local;
+package com.openpositioning.PositionMe.data.storage;
 
 import android.content.ContentValues;
 import android.content.Context;
@@ -21,15 +21,16 @@ import java.util.Date;
 import java.util.List;
 
 /**
- * DataFileManager encapsulates all file I/O and buffering logic.
+ * {@link TrajectoryDataWriter} implementation that writes records to a JSON
+ * file on the device. Data is buffered and periodically flushed to disk.
  *
  * It creates a new output file in the public Downloads folder, buffers JSON records,
  * automatically flushes them when a threshold is reached, and finalizes the file on close.
  *
  * @author Shu Gu
  */
-public class DataFileManager {
-    private static final String TAG = "DataFileManager";
+public class FileTrajectoryWriter implements TrajectoryDataWriter {
+    private static final String TAG = "FileTrajectoryWriter";
     private static final int FLUSH_THRESHOLD = 50;
 
     private Context context;
@@ -38,11 +39,11 @@ public class DataFileManager {
     private List<JSONObject> dataBuffer;
 
     /**
-     * Constructs a new DataFileManager instance.
+     * Create a writer that stores trajectory records to a file.
      *
      * @param context the application context
      */
-    public DataFileManager(Context context) {
+    public FileTrajectoryWriter(Context context) {
         this.context = context;
         this.dataBuffer = new ArrayList<>();
         prepareLocalFetch();
@@ -71,17 +72,19 @@ public class DataFileManager {
      *
      * @param record the JSON record to add
      */
+    @Override
     public void addRecord(JSONObject record) {
         dataBuffer.add(record);
         if (dataBuffer.size() >= FLUSH_THRESHOLD) {
-            flushBuffer();
+            flush();
         }
     }
 
     /**
      * Flushes all buffered records to the output file and clears the buffer.
      */
-    public void flushBuffer() {
+    @Override
+    public void flush() {
         if (dataBuffer.isEmpty() || outStream == null) {
             Log.d(TAG, "Flush skipped; buffer empty or output stream is null.");
             return;
@@ -103,7 +106,7 @@ public class DataFileManager {
      * For API >= Q, it also updates the file's pending flag so it becomes visible.
      */
     public void close() {
-        flushBuffer();
+        flush();
         if (outStream != null) {
             try {
                 outStream.close();

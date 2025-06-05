@@ -21,7 +21,8 @@ import androidx.preference.PreferenceManager;
 
 import com.google.android.gms.maps.model.LatLng;
 import com.openpositioning.PositionMe.R;
-import com.openpositioning.PositionMe.data.local.DataFileManager;
+import com.openpositioning.PositionMe.data.storage.FileTrajectoryWriter;
+import com.openpositioning.PositionMe.data.storage.TrajectoryDataWriter;
 import com.openpositioning.PositionMe.sensors.SensorFusion;
 import com.openpositioning.PositionMe.sensors.SensorTypes;
 import com.openpositioning.PositionMe.sensors.Wifi;
@@ -45,11 +46,11 @@ import java.util.List;
  * </ul>
  *
  * <p>To use this fragment, the following references must be injected via setters:
- * {@link (SensorFusion)}, {@link (DataFileManager)},
+ * {@link (SensorFusion)}, {@link (TrajectoryDataWriter)},
  * and {@link (TrajectoryMapFragment)}.
  *
  * <p>The fragment supports both manual calibration tagging and continuous background data collection.
- * Data is written to {@link com.openpositioning.PositionMe.data.local.DataFileManager}.
+ * Data is written to {@link com.openpositioning.PositionMe.data.storage.FileTrajectoryWriter}.
  *
  * <p>This class works closely with:
  * <ul>
@@ -60,7 +61,7 @@ import java.util.List;
  *
  * @see TrajectoryMapFragment
  * @see SensorFusion
- * @see DataFileManager
+ * @see TrajectoryDataWriter
  */
 public class RecordingFragment extends Fragment {
 
@@ -74,7 +75,7 @@ public class RecordingFragment extends Fragment {
     private StatusBottomSheetFragment statusBottomSheet;
 
     private SensorFusion sensorFusion;
-    private DataFileManager dataFileManager;
+    private TrajectoryDataWriter dataFileManager;
     private SharedPreferences settings;
 
     private Handler refreshDataHandler;
@@ -106,7 +107,7 @@ public class RecordingFragment extends Fragment {
         Context context = requireActivity();
         settings = PreferenceManager.getDefaultSharedPreferences(context);
         refreshDataHandler = new Handler();
-        dataFileManager = new DataFileManager(requireContext());
+        dataFileManager = new FileTrajectoryWriter(requireContext());
     }
 
     @Nullable
@@ -151,7 +152,7 @@ public class RecordingFragment extends Fragment {
                     .commitNow();
         }
         calibrationFragment.setSensorFusion(sensorFusion);
-        calibrationFragment.setDataFileManager(dataFileManager);
+        calibrationFragment.setTrajectoryDataWriter(dataFileManager);
         calibrationFragment.setTrajectoryMapFragment(trajectoryMapFragment);
 
         // Show/hide bottom sheet

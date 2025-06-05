@@ -25,7 +25,7 @@ import com.google.android.gms.maps.model.Marker;
 import com.google.android.gms.maps.model.MarkerOptions;
 import com.google.android.material.button.MaterialButton;
 import com.openpositioning.PositionMe.R;
-import com.openpositioning.PositionMe.data.local.DataFileManager;
+import com.openpositioning.PositionMe.data.storage.TrajectoryDataWriter;
 import com.openpositioning.PositionMe.sensors.SensorFusion;
 import com.openpositioning.PositionMe.utils.CalibrationUtils;
 
@@ -59,7 +59,7 @@ public class CalibrationFragment extends Fragment {
 
     // Data references
     private SensorFusion sensorFusion;
-    private DataFileManager dataFileManager;
+    private TrajectoryDataWriter dataFileManager;
     private TrajectoryMapFragment trajectoryMapFragment;
 
     // Marker & calibration state
@@ -97,7 +97,8 @@ public class CalibrationFragment extends Fragment {
     public void setSensorFusion(SensorFusion sensorFusion) {
         this.sensorFusion = sensorFusion;
     }
-    public void setDataFileManager(DataFileManager dataFileManager) {
+
+    public void setTrajectoryDataWriter(TrajectoryDataWriter dataFileManager) {
         this.dataFileManager = dataFileManager;
     }
     public void setTrajectoryMapFragment(TrajectoryMapFragment mapFragment) {
@@ -463,7 +464,7 @@ public class CalibrationFragment extends Fragment {
 
         // Optionally flush or finalize data here
         if (dataFileManager != null) {
-            dataFileManager.flushBuffer();
+            dataFileManager.flush();
             // dataFileManager.close(); // Uncomment if you want to close the file entirely
         }
 
