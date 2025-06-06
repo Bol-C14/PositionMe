@@ -29,6 +29,7 @@ import com.openpositioning.PositionMe.utils.PathView;
 import com.openpositioning.PositionMe.utils.PdrProcessing;
 import com.openpositioning.PositionMe.data.remote.ServerCommunications;
 import com.openpositioning.PositionMe.Traj;
+import com.openpositioning.PositionMe.data.local.FileRepository;
 import com.openpositioning.PositionMe.presentation.fragment.SettingsFragment;
 import com.openpositioning.PositionMe.domain.EKF;
 
@@ -1322,6 +1323,9 @@ public class SensorFusion implements SensorEventListener, Observer {
     public void sendTrajectoryToCloud() {
         // Build object
         Traj.Trajectory sentTrajectory = trajectory.build();
+        // Persist locally
+        FileRepository repo = new FileRepository(appContext);
+        repo.saveTrajectory(sentTrajectory);
         // Pass object to communications object
         this.serverCommunications.sendTrajectory(sentTrajectory);
     }
