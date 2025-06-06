@@ -170,6 +170,13 @@ All scripts located in:
 - Data sync over WiFi/mobile
 - Edit advanced constants
 
+## Trajectory Files
+
+Trajectory recordings are stored as JSON files named `trajectory_<timestamp>.txt`.
+The timestamp follows `dd-MM-yy-HH-mm-ss`. Files are written and read via the
+`TrajectoryIO` helper which converts between the protobuf `Traj.Trajectory`
+and its JSON representation.
+
 ## 🧩 Common Issues & Fixes
 
 | Issue                          | Fix                                                        |

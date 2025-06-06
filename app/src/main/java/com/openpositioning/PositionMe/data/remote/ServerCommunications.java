@@ -28,6 +28,7 @@ import androidx.preference.PreferenceManager;
 import com.google.protobuf.util.JsonFormat;
 import com.openpositioning.PositionMe.BuildConfig;
 import com.openpositioning.PositionMe.Traj;
+import com.openpositioning.PositionMe.data.local.TrajectoryIO;
 import com.openpositioning.PositionMe.presentation.fragment.FilesFragment;
 import com.openpositioning.PositionMe.presentation.activity.MainActivity;
 import com.openpositioning.PositionMe.sensors.Observable;
@@ -539,10 +540,8 @@ public class ServerCommunications implements Observable {
                     }
 
                     File file = new File(appSpecificDownloads, fileName);
-                    try (FileWriter fileWriter = new FileWriter(file)) {
-                        String receivedTrajectoryString = JsonFormat.printer().print(receivedTrajectory);
-                        fileWriter.write(receivedTrajectoryString);
-                        fileWriter.flush();
+                    try {
+                        TrajectoryIO.writeTrajectory(file, receivedTrajectory);
                         System.err.println("Received trajectory stored in: " + file.getAbsolutePath());
                     } catch (IOException ee) {
                         System.err.println("Trajectory download failed");
