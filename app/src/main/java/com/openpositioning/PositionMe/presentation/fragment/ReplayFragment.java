@@ -17,7 +17,8 @@ import androidx.fragment.app.Fragment;
 import com.google.android.gms.maps.model.LatLng;
 import com.openpositioning.PositionMe.R;
 import com.openpositioning.PositionMe.presentation.activity.ReplayActivity;
-import com.openpositioning.PositionMe.data.local.TrajParser;
+import com.openpositioning.PositionMe.data.local.TrajectoryParser;
+import com.openpositioning.PositionMe.data.local.TrajectoryParserFactory;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -39,7 +40,7 @@ import java.util.List;
  *
  * @see TrajectoryMapFragment The map fragment displaying the trajectory.
  * @see ReplayActivity The activity managing the replay workflow.
- * @see TrajParser Utility class for parsing trajectory data.
+ * @see TrajectoryParser Parser interface for trajectory data.
  *
  * @author Shu Gu
  */
@@ -61,7 +62,7 @@ public class ReplayFragment extends Fragment {
     // Playback-related
     private final Handler playbackHandler = new Handler();
     private final long PLAYBACK_INTERVAL_MS = 500; // milliseconds
-    private List<TrajParser.ReplayPoint> replayData = new ArrayList<>();
+    private final List<TrajectoryParser.ReplayPoint> replayData = new ArrayList<>();
     private int currentIndex = 0;
     private boolean isPlaying = false;
 
@@ -95,8 +96,10 @@ public class ReplayFragment extends Fragment {
 
         Log.i(TAG, "Trajectory file confirmed to exist and is readable.");
 
-        // Parse the JSON file and prepare replayData using TrajParser
-        replayData = TrajParser.parseTrajectoryData(filePath, requireContext(), initialLat, initialLon);
+        // Parse the JSON file and prepare replayData using TrajectoryParser
+        TrajectoryParser parser = TrajectoryParserFactory.createJsonParser();
+        replayData.clear();
+        replayData.addAll(parser.parse(java.nio.file.Paths.get(filePath), requireContext(), initialLat, initialLon));
 
         // Log the number of parsed points
         if (replayData != null && !replayData.isEmpty()) {
@@ -234,8 +237,8 @@ public class ReplayFragment extends Fragment {
     /**
      * Checks if any ReplayPoint contains a non-null gnssLocation.
      */
-    private boolean hasAnyGnssData(List<TrajParser.ReplayPoint> data) {
-        for (TrajParser.ReplayPoint point : data) {
+    private boolean hasAnyGnssData(List<TrajectoryParser.ReplayPoint> data) {
+        for (TrajectoryParser.ReplayPoint point : data) {
             if (point.gnssLocation != null) {
                 return true;
             }
@@ -280,8 +283,8 @@ public class ReplayFragment extends Fragment {
     /**
      * Retrieve the first available GNSS location from the replay data.
      */
-    private LatLng getFirstGnssLocation(List<TrajParser.ReplayPoint> data) {
-        for (TrajParser.ReplayPoint point : data) {
+    private LatLng getFirstGnssLocation(List<TrajectoryParser.ReplayPoint> data) {
+        for (TrajectoryParser.ReplayPoint point : data) {
             if (point.gnssLocation != null) {
                 return new LatLng(replayData.get(0).gnssLocation.latitude, replayData.get(0).gnssLocation.longitude);
             }
@@ -332,7 +335,7 @@ public class ReplayFragment extends Fragment {
             // Clear everything and redraw up to newIndex
             trajectoryMapFragment.clearMapAndReset();
             for (int i = 0; i <= newIndex; i++) {
-                TrajParser.ReplayPoint p = replayData.get(i);
+                TrajectoryParser.ReplayPoint p = replayData.get(i);
                 trajectoryMapFragment.updateUserLocation(p.pdrLocation, p.orientation);
                 if (p.gnssLocation != null) {
                     trajectoryMapFragment.updateGNSS(p.gnssLocation);
@@ -340,7 +343,7 @@ public class ReplayFragment extends Fragment {
             }
         } else {
             // Normal sequential forward step: add just the new point
-            TrajParser.ReplayPoint p = replayData.get(newIndex);
+            TrajectoryParser.ReplayPoint p = replayData.get(newIndex);
             trajectoryMapFragment.updateUserLocation(p.pdrLocation, p.orientation);
             if (p.gnssLocation != null) {
                 trajectoryMapFragment.updateGNSS(p.gnssLocation);
