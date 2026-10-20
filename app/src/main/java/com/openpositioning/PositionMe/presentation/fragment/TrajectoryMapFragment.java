@@ -4,6 +4,9 @@ import android.content.Context;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -80,11 +83,18 @@ public abstract class TrajectoryMapFragment extends Fragment {
     protected final List<Marker> accessibleToiletMarkers = new ArrayList<>();
     protected final List<Marker> drinkingWaterMarkers = new ArrayList<>();
     protected final List<Marker> medicalRoomMarkers = new ArrayList<>();
+    private final List<Marker> testPointMarkers = new ArrayList<>();
     protected boolean lastIndoorMapState = false;
 
     // Flag to track if the camera is currently tracking the user's location
     protected boolean isCameraTracking = true;
-    protected boolean isAutoFloorOn = true;;
+    protected boolean isAutoFloorOn = true;
+    private static final long AUTO_FLOOR_CHECK_INTERVAL_MS = 1000L;
+    private static final long AUTO_FLOOR_DEBOUNCE_MS = 3000L;
+    private final Handler autoFloorHandler = new Handler(Looper.getMainLooper());
+    private Runnable autoFloorTask;
+    private int lastCandidateFloor = Integer.MIN_VALUE;
+    private long lastCandidateTime;
 
 
     public TrajectoryMapFragment() {
@@ -124,6 +134,7 @@ public abstract class TrajectoryMapFragment extends Fragment {
             isAutoFloorOn = !isAutoFloorOn;
             autoFloorButton.setBackgroundTintList(ColorStateList.valueOf(
                     isAutoFloorOn ? getResources().getColor(R.color.md_theme_primary) : Color.GRAY));
+            if (isAutoFloorOn) startAutoFloor(); else stopAutoFloor();
             updateFloorControlVisibility();
         });
 
@@ -131,6 +142,7 @@ public abstract class TrajectoryMapFragment extends Fragment {
         floorUpButton.setOnClickListener(v -> {
             isAutoFloorOn = false;
             autoFloorButton.setBackgroundTintList(ColorStateList.valueOf(Color.GRAY));
+            stopAutoFloor();
             if (indoorMapManager != null) indoorMapManager.increaseFloor();
             updateAllIndoorMarkers();
             updateFloorControlVisibility();
@@ -140,6 +152,7 @@ public abstract class TrajectoryMapFragment extends Fragment {
         floorDownButton.setOnClickListener(v -> {
             isAutoFloorOn = false;
             autoFloorButton.setBackgroundTintList(ColorStateList.valueOf(Color.GRAY));
+            stopAutoFloor();
             if (indoorMapManager != null) indoorMapManager.decreaseFloor();
             updateAllIndoorMarkers();
             updateFloorControlVisibility();
@@ -191,11 +204,7 @@ public abstract class TrajectoryMapFragment extends Fragment {
         }
 
         sensorFusion.setOnWifiFloorChangedListener(newFloor -> {
-            if (isAutoFloorOn && indoorMapManager != null) {
-                indoorMapManager.setCurrentFloor(newFloor, true);
-                updateAllIndoorMarkers();
-                updateFloorControlVisibility();
-            }
+            if (isAutoFloorOn) autoFloorHandler.post(this::evaluateAutoFloor);
         });
 
         sensorFusion.setTrajectoryMapFragment(this);
@@ -318,6 +327,7 @@ public abstract class TrajectoryMapFragment extends Fragment {
             boolean currentState = indoorMapManager.getIsIndoorMapSet();
             if (currentState != lastIndoorMapState) {
                 lastIndoorMapState = currentState;
+                if (currentState && isAutoFloorOn && autoFloorTask == null) startAutoFloor();
 
                 Log.d("currentfloor", "Building polygon added, vertex count: " + this.getCurrentBuilding());
                 Log.d("currentfloor", "Building polygon added, vertex count: " + this.getCurrentFloor());
@@ -382,6 +392,52 @@ public abstract class TrajectoryMapFragment extends Fragment {
         }
     }
 
+    private void startAutoFloor() {
+        stopAutoFloor();
+        if (indoorMapManager == null || !indoorMapManager.getIsIndoorMapSet()) return;
+        evaluateAutoFloor();
+        autoFloorTask = new Runnable() {
+            @Override public void run() {
+                evaluateAutoFloor();
+                autoFloorHandler.postDelayed(this, AUTO_FLOOR_CHECK_INTERVAL_MS);
+            }
+        };
+        autoFloorHandler.postDelayed(autoFloorTask, AUTO_FLOOR_CHECK_INTERVAL_MS);
+    }
+
+    private void stopAutoFloor() {
+        if (autoFloorTask != null) autoFloorHandler.removeCallbacks(autoFloorTask);
+        autoFloorTask = null;
+        lastCandidateFloor = Integer.MIN_VALUE;
+        lastCandidateTime = 0L;
+    }
+
+    private void evaluateAutoFloor() {
+        if (!isAutoFloorOn || sensorFusion == null || indoorMapManager == null
+                || !indoorMapManager.getIsIndoorMapSet()) return;
+        int candidateFloor;
+        if (sensorFusion.getLatLngWifiPositioning() != null) {
+            candidateFloor = sensorFusion.getWifiFloor();
+        } else {
+            float floorHeight = indoorMapManager.getFloorHeight();
+            if (floorHeight <= 0f) return;
+            candidateFloor = Math.round(sensorFusion.getElevation() / floorHeight);
+        }
+
+        long now = SystemClock.elapsedRealtime();
+        if (candidateFloor != lastCandidateFloor) {
+            lastCandidateFloor = candidateFloor;
+            lastCandidateTime = now;
+            return;
+        }
+        if (now - lastCandidateTime >= AUTO_FLOOR_DEBOUNCE_MS
+                && indoorMapManager.getCurrentFloor() != candidateFloor) {
+            indoorMapManager.setCurrentFloor(candidateFloor, true);
+            updateAllIndoorMarkers();
+            lastCandidateTime = now;
+        }
+    }
+
     /**
      * Set the visibility of the fusion trajectory plotter.
      * @param show
@@ -416,6 +472,18 @@ public abstract class TrajectoryMapFragment extends Fragment {
         }
     }
 
+    private boolean isFusionTrajectoryVisible() {
+        return fusionTrajectoryPlotter != null
+                && fusionTrajectoryPlotter.getPolyline() != null
+                && fusionTrajectoryPlotter.getPolyline().isVisible();
+    }
+
+    private boolean isWifiTrajectoryVisible() {
+        return wifiTrajectoryPlotter != null
+                && wifiTrajectoryPlotter.getPolyline() != null
+                && wifiTrajectoryPlotter.getPolyline().isVisible();
+    }
+
     /**
      * Set the visibility of the GNSS trajectory plotter.
      * @return
@@ -424,26 +492,6 @@ public abstract class TrajectoryMapFragment extends Fragment {
         return rawTrajectoryPlotter != null
                 && rawTrajectoryPlotter.getPolyline() != null
                 && rawTrajectoryPlotter.getPolyline().isVisible();
-    }
-
-    /**
-     * Set the visibility of the fusion trajectory plotter.
-     * @return
-     */
-    private boolean isFusionTrajectoryVisible() {
-        return fusionTrajectoryPlotter != null
-                && fusionTrajectoryPlotter.getPolyline() != null
-                && fusionTrajectoryPlotter.getPolyline().isVisible();
-    }
-
-    /**
-     * Set the visibility of the wifi trajectory plotter.
-     * @return
-     */
-    private boolean isWifiTrajectoryVisible() {
-        return wifiTrajectoryPlotter != null
-                && wifiTrajectoryPlotter.getPolyline() != null
-                && wifiTrajectoryPlotter.getPolyline().isVisible();
     }
 
     /**
@@ -513,6 +561,19 @@ public abstract class TrajectoryMapFragment extends Fragment {
         TrajectoryMapMaker.updateMedicalRoomMarkers(gMap, floor, building, medicalRoomMarkers, context);
     }
 
+    /** Adds a numbered marker for a recorded test point. */
+    public void addTestPointMarker(int index, long timestampMs, @NonNull LatLng position) {
+        if (gMap == null) return;
+        Marker marker = gMap.addMarker(new com.google.android.gms.maps.model.MarkerOptions()
+                .position(position)
+                .title("TP " + index)
+                .snippet("t=" + timestampMs));
+        if (marker != null) {
+            marker.showInfoWindow();
+            testPointMarkers.add(marker);
+        }
+    }
+
     /**
      * Allows other components to set the initial map camera position.
      * If the map isn't ready, we store a pending movement.
@@ -572,7 +633,15 @@ public abstract class TrajectoryMapFragment extends Fragment {
     /**
      * Clear all current draw trajectory on on the map.
      */
+    @Override
+    public void onDestroyView() {
+        stopAutoFloor();
+        super.onDestroyView();
+    }
+
     public void clearMapAndReset() {
+        for (Marker marker : testPointMarkers) marker.remove();
+        testPointMarkers.clear();
         if (rawTrajectoryPlotter != null) rawTrajectoryPlotter.clear();
         if (fusionTrajectoryPlotter != null) fusionTrajectoryPlotter.clear();
         if (wifiTrajectoryPlotter != null) wifiTrajectoryPlotter.clear();

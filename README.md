@@ -23,10 +23,28 @@ PositionMe is a mobile Android application for **real-time indoor/outdoor positi
 
 ## 🚀 Getting Started (Developers)
 
-### ✅ Prerequisites
+### Build baseline (M0)
 
-| Tool             | Version               |
-|------------------|------------------------|
+- JDK 17 (CI); local M0 verification also uses JDK 21.
+- Android SDK platform 35 and Build Tools 35.0.0.
+- Gradle 8.11.1 through the checked-in wrapper, Android Gradle Plugin 8.8.2.
+- Set `ANDROID_HOME` to your SDK directory, or create an ignored `local.properties` with `sdk.dir=/absolute/path/to/sdk`.
+
+```bash
+git clone https://github.com/Bol-C14/PositionMe.git
+cd PositionMe
+# Check out the desired development branch before building.
+cp secrets.properties.example secrets.properties
+bash gradlew assembleDebug testDebugUnitTest lintDebug
+```
+
+A debug build can compile with empty credentials. A working Google Maps key is needed for maps, and OpenPositioning credentials are needed for server features. Keep local credentials untracked. Debug uses Android's generated debug signing key; release signing is configured separately outside the repository.
+
+The optional Wi-Fi ML predictor expects `app/src/main/assets/tf_model.tflite` and `bssid2idx.json`; these model assets are not included. Do not assume offline ML prediction is available in the baseline.
+
+See [the roadmap](docs/ROADMAP.md) and [M0 verification](docs/M0_BASELINE.md) for integration decisions, checks, and remaining device validation.
+
+------------------|------------------------|
 | Android Studio   | Arctic Fox (2020.3.1) or newer |
 | Android SDK      | API Level 34           |
 | Gradle           | 8.0+                   |

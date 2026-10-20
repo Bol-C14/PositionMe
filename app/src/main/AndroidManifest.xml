@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.openpositioning.PositionMe">
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!--
          1. Hardware features.
@@ -29,12 +29,27 @@
 
     <!-- Wi-Fi and network state (note that setWifiEnabled() no longer works on Android 10+ if you target 29+) -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"/>
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
 
     <!-- Location -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+
+    <!-- Bluetooth (BLE scanning, Android 12+ requires BLUETOOTH_SCAN and BLUETOOTH_CONNECT) -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        tools:targetApi="s" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+    <!-- Notifications (Android 13+ requires POST_NOTIFICATIONS for foreground service notification) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Foreground Service (required for background data collection) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
 
     <!-- Internet -->
     <uses-permission android:name="android.permission.INTERNET"/>
@@ -81,7 +96,7 @@
         <!-- Google Maps API key metadata -->
     <meta-data
         android:name="com.google.android.geo.API_KEY"
-        android:value="@string/google_maps_key"/>
+        android:value="${MAPS_API_KEY}"/>
 
     <activity
         android:name="com.openpositioning.PositionMe.presentation.activity.MainActivity"
@@ -93,6 +108,12 @@
             <category android:name="android.intent.category.LAUNCHER" />
         </intent-filter>
     </activity>
+
+    <!-- Foreground service for background sensor data collection during recording -->
+    <service
+        android:name=".service.SensorCollectionService"
+        android:exported="false"
+        android:foregroundServiceType="location" />
 
 </application>
 

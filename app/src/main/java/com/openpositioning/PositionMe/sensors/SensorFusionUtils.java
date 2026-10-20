@@ -13,8 +13,8 @@ import java.util.List;
 
 public class SensorFusionUtils {
     // but now a static helper taking exactly what it needs.
-    public static Traj.Sensor_Info.Builder createInfoBuilder(MovementSensor sensor) {
-        return Traj.Sensor_Info.newBuilder()
+    public static Traj.SensorInfo.Builder createInfoBuilder(MovementSensor sensor) {
+        return Traj.SensorInfo.newBuilder()
                 .setName(sensor.sensorInfo.getName())
                 .setVendor(sensor.sensorInfo.getVendor())
                 .setResolution(sensor.sensorInfo.getResolution())
@@ -56,9 +56,9 @@ public class SensorFusionUtils {
             }
 
             // 5) Linear acceleration (filtered)
-            record.put("filteredAccX", sensorFusion.filteredAcc[0]);
-            record.put("filteredAccY", sensorFusion.filteredAcc[1]);
-            record.put("filteredAccZ", sensorFusion.filteredAcc[2]);
+            record.put("filteredAccX", sensorFusion.sensorState().filteredAcc[0]);
+            record.put("filteredAccY", sensorFusion.sensorState().filteredAcc[1]);
+            record.put("filteredAccZ", sensorFusion.sensorState().filteredAcc[2]);
 
             // 6) Gyroscope
             float[] gyro = sensorFusion.getSensorValueMap().get(SensorTypes.GYRO);
@@ -85,24 +85,24 @@ public class SensorFusionUtils {
             }
 
             // 9) Rotation Vector
-            record.put("rotationX", sensorFusion.rotation[0]);
-            record.put("rotationY", sensorFusion.rotation[1]);
-            record.put("rotationZ", sensorFusion.rotation[2]);
-            record.put("rotationW", sensorFusion.rotation[3]);
+            record.put("rotationX", sensorFusion.sensorState().rotation[0]);
+            record.put("rotationY", sensorFusion.sensorState().rotation[1]);
+            record.put("rotationZ", sensorFusion.sensorState().rotation[2]);
+            record.put("rotationW", sensorFusion.sensorState().rotation[3]);
 
             // 10) Orientation (azimuth, pitch, roll)
-            record.put("orientationAzim", sensorFusion.orientation[0]);
-            record.put("orientationPitch", sensorFusion.orientation[1]);
-            record.put("orientationRoll", sensorFusion.orientation[2]);
-            record.put("orientationHeading", computeHeadingFromOrientation(sensorFusion.orientation));
+            record.put("orientationAzim", sensorFusion.sensorState().orientation[0]);
+            record.put("orientationPitch", sensorFusion.sensorState().orientation[1]);
+            record.put("orientationRoll", sensorFusion.sensorState().orientation[2]);
+            record.put("orientationHeading", computeHeadingFromOrientation(sensorFusion.sensorState().orientation));
 
             // 11) Step Count
-            record.put("stepCounter", sensorFusion.stepCounter);
+            record.put("stepCounter", sensorFusion.sensorState().stepCounter);
 
             // 12) Environmental sensors
-            record.put("light", sensorFusion.light);
-            record.put("proximity", sensorFusion.proximity);
-            record.put("pressure", sensorFusion.pressure);
+            record.put("light", sensorFusion.sensorState().light);
+            record.put("proximity", sensorFusion.sensorState().proximity);
+            record.put("pressure", sensorFusion.sensorState().pressure);
 
             // 13) Elevation & elevator flag
             record.put("elevation", sensorFusion.getElevation());
@@ -112,7 +112,7 @@ public class SensorFusionUtils {
             record.put("holdMode", sensorFusion.getHoldMode());
 
             // 15) WiFi readings
-            List<Wifi> wifiList = sensorFusion.getWifiList();
+            List<Wifi> wifiList = sensorFusion.latestWifiList();
             if (wifiList != null && !wifiList.isEmpty()) {
                 org.json.JSONArray wifiArray = new org.json.JSONArray();
                 for (Wifi w : wifiList) {

@@ -45,7 +45,7 @@ import java.util.List;
  * </ul>
  *
  * <p>To use this fragment, the following references must be injected via setters:
- * {@link (SensorFusion)}, {@link (DataFileManager)},
+ * {@link SensorFusion}, {@link (DataFileManager)},
  * and {@link (TrajectoryMapFragment)}.
  *
  * <p>The fragment supports both manual calibration tagging and continuous background data collection.
@@ -81,6 +81,9 @@ public class RecordingFragment extends Fragment {
     private CountDownTimer autoStop;
     private Handler sensorUpdateHandler;
     private Runnable sensorUpdateTask;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private Runnable startRecordingTask;
+    private int testPointIndex;
 
     private float previousPosX = 0f;
     private float previousPosY = 0f;
@@ -123,13 +126,12 @@ public class RecordingFragment extends Fragment {
         float[] startPosition = sensorFusion.getGNSSLatitude(false);
         sensorFusion.setStartGNSSLatitude(startPosition);
 
-        Context context = requireContext(); // ensure context is not null
-        new Handler(Looper.getMainLooper()).postDelayed(() -> {
-            SensorFusion.getInstance().startRecording(context);
-        }, 3000); // 3000ms = 3 sec
+        startRecordingTask = sensorFusion::startRecording;
+        mainHandler.postDelayed(startRecordingTask, 3000);
 
         completeButton = view.findViewById(R.id.finishRecordingButton);
         moreInfoButton = view.findViewById(R.id.moreInfoButton);
+        view.findViewById(R.id.addTestPointButton).setOnClickListener(v -> onAddTestPoint());
 
         trajectoryMapFragment = (TrajectoryMapFragment) getChildFragmentManager()
                 .findFragmentById(R.id.trajectoryMapFragmentContainer);
@@ -221,6 +223,22 @@ public class RecordingFragment extends Fragment {
             }
         };
         sensorUpdateHandler.post(sensorUpdateTask);
+    }
+
+    private void onAddTestPoint() {
+        if (trajectoryMapFragment == null) return;
+        LatLng current = trajectoryMapFragment.getCurrentLocation();
+        if (current == null) {
+            android.widget.Toast.makeText(requireContext(),
+                    "Waiting for a location fix. Move a few steps or wait for the map to load.",
+                    android.widget.Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        long timestampMs = System.currentTimeMillis();
+        int index = ++testPointIndex;
+        sensorFusion.addTestPointToProto(timestampMs, current.latitude, current.longitude);
+        trajectoryMapFragment.addTestPointMarker(index, timestampMs, current);
     }
 
     private void collectFullSensorData() {
@@ -328,5 +346,17 @@ public class RecordingFragment extends Fragment {
         if (!settings.getBoolean("split_trajectory", false)) {
             refreshDataHandler.postDelayed(refreshDataTask, 500);
         }
+    }
+
+
+    @Override
+    public void onDestroyView() {
+        refreshDataHandler.removeCallbacks(refreshDataTask);
+        if (sensorUpdateHandler != null && sensorUpdateTask != null) {
+            sensorUpdateHandler.removeCallbacks(sensorUpdateTask);
+        }
+        if (startRecordingTask != null) mainHandler.removeCallbacks(startRecordingTask);
+        if (autoStop != null) autoStop.cancel();
+        super.onDestroyView();
     }
 }
