@@ -15,9 +15,9 @@ from plotting import plot_results
 
 def main():
     # ========== (A) Batch process each file: align, trim, convert back to lat/lon ==========
-    file_list = glob.glob("./data_floor1_flat/*.json")
+    file_list = sorted(glob.glob("./data_floor1_flat/*.json") + glob.glob("./data_floor1_flat/*.jsonl"))
     if not file_list:
-        print("No .json files found in ./data. Exiting.")
+        print("No .json or .jsonl files found in ./data. Exiting.")
         sys.exit(1)
 
     all_aligned_trimmed = []

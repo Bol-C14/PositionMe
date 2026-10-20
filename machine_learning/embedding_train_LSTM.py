@@ -70,9 +70,9 @@ def build_multi_input_model(
 
 def main():
     # ========== 1) Load and align data ==========
-    file_list = glob.glob("./data/*.json")
+    file_list = sorted(glob.glob("./data/*.json") + glob.glob("./data/*.jsonl"))
     if not file_list:
-        print("No .json files found in ./data. Exiting.")
+        print("No .json or .jsonl files found in ./data. Exiting.")
         sys.exit(1)
 
     all_aligned_trimmed = []
@@ -195,7 +195,7 @@ def main():
         X_bssid_seq.append(bssid_mat)
         X_rssi_seq.append(rssi_mat)
         X_sensor_seq.append(sensor_mat)
-        Y_seq.append([item["x_true"], item["y_true"] for item in [records_arr[i]]][0])
+        Y_seq.append([records_arr[i]["x_true"], records_arr[i]["y_true"]])
 
     X_bssid_seq = np.array(X_bssid_seq, dtype=np.int32)
     X_rssi_seq  = np.array(X_rssi_seq, dtype=np.float32)

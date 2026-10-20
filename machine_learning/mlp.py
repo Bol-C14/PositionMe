@@ -13,7 +13,7 @@ from alignment import piecewise_procrustes_alignment
 from plotting import plot_results
 
 def main():
-    file_list = glob.glob("./data/*.json")
+    file_list = sorted(glob.glob("./data/*.json") + glob.glob("./data/*.jsonl"))
     if not file_list:
         sys.exit("No JSON files found.")
 

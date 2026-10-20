@@ -95,9 +95,7 @@ public class CorrectionFragment extends Fragment {
                 mMap.addMarker(new MarkerOptions().position(start).title("Start Position"));
 
                 // Calculate zoom for demonstration
-                double zoom = Math.log(156543.03392f * Math.cos(startPosition[0] * Math.PI / 180)
-                        * scalingRatio) / Math.log(2);
-                mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(start, (float) zoom));
+                updateCorrectionCamera();
             }
         });
 
@@ -111,6 +109,11 @@ public class CorrectionFragment extends Fragment {
         this.averageStepLengthText = view.findViewById(R.id.averageStepView);
         this.stepLengthInput = view.findViewById(R.id.inputStepLength);
         this.pathView = view.findViewById(R.id.pathView1);
+        this.pathView.setTrajectory(sensorFusion.getRecordedPdrPathSnapshot());
+        this.pathView.setScaleListener(scale -> {
+            scalingRatio = scale;
+            updateCorrectionCamera();
+        });
 
         averageStepLength = sensorFusion.passAverageStepLength();
         averageStepLengthText.setText(getString(R.string.averageStepLgn) + ": "
@@ -121,7 +124,7 @@ public class CorrectionFragment extends Fragment {
             if (keyCode == KeyEvent.KEYCODE_ENTER) {
                 newStepLength = Float.parseFloat(changedText.toString());
                 // Rescale path
-                sensorFusion.redrawPath(newStepLength / averageStepLength);
+                pathView.redraw(newStepLength / averageStepLength);
                 averageStepLengthText.setText(getString(R.string.averageStepLgn)
                         + ": " + String.format("%.2f", newStepLength));
                 pathView.invalidate();
@@ -164,6 +167,17 @@ public class CorrectionFragment extends Fragment {
 
     public void setScalingRatio(float scalingRatio) {
         this.scalingRatio = scalingRatio;
+    }
+
+    private void updateCorrectionCamera() {
+        if (mMap == null || start == null) return;
+        float zoom = 19f;
+        if (Float.isFinite(scalingRatio) && scalingRatio > 0f) {
+            double zoomValue = Math.log(156543.03392f
+                    * Math.cos(start.latitude * Math.PI / 180.0) * scalingRatio) / Math.log(2.0);
+            if (Double.isFinite(zoomValue)) zoom = (float) Math.max(0.0, Math.min(21.0, zoomValue));
+        }
+        mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(start, zoom));
     }
 
     /**

@@ -16,7 +16,6 @@ import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
 
 import com.openpositioning.PositionMe.R;
-import com.openpositioning.PositionMe.presentation.activity.MainActivity;
 import com.openpositioning.PositionMe.sensors.SensorFusion;
 
 /**
@@ -141,7 +140,8 @@ public class SensorCollectionService extends Service {
     }
 
     private Notification buildNotification() {
-        Intent tapIntent = new Intent(this, MainActivity.class);
+        Intent tapIntent = getPackageManager().getLaunchIntentForPackage(getPackageName());
+        if (tapIntent == null) tapIntent = new Intent().setPackage(getPackageName());
         tapIntent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         PendingIntent pendingIntent = PendingIntent.getActivity(
                 this, 0, tapIntent,

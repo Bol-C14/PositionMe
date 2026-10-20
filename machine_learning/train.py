@@ -12,9 +12,9 @@ from plotting import plot_results  # Uses rawPdrX/Y and pdrX/Y for visual compar
 
 def main():
     # 1) Load all JSON files from the ./data directory
-    file_list = glob.glob("./data/*.json")
+    file_list = sorted(glob.glob("./data/*.json") + glob.glob("./data/*.jsonl"))
     if not file_list:
-        print("No .json files found in ./data. Exiting.")
+        print("No .json or .jsonl files found in ./data. Exiting.")
         sys.exit(1)
 
     all_aligned_trimmed = []  # Stores all aligned + trimmed + converted records

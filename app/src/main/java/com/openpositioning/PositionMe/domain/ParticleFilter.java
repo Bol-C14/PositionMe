@@ -1,10 +1,7 @@
 package com.openpositioning.PositionMe.domain;
 
-import com.google.android.gms.maps.model.LatLng;
-import com.openpositioning.PositionMe.utils.CoordinateTransform;
-import com.openpositioning.PositionMe.utils.MapConstraint;
-
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Random;
 
@@ -64,21 +61,23 @@ public class ParticleFilter {
 
     // Reference coords, so we unify everything in an ENU coordinate system
     //  e.g. same coords used by the existing EKF
-    private double refLat;
-    private double refLon;
-    private double refAlt;
-    private MapConstraint mapConstraint;
+    private final GeoPosition referencePosition;
 
     /**
      * Constructor: initialize with a certain number of particles,
      * and a reference coordinate for coordinate transforms.
      */
-    public ParticleFilter(int numParticles, double refLat, double refLon, double refAlt) {
+    public ParticleFilter(int numParticles, GeoPosition referencePosition, long randomSeed) {
+        this(numParticles, referencePosition, new Random(randomSeed));
+    }
+
+    public ParticleFilter(int numParticles, GeoPosition referencePosition, Random random) {
+        if (numParticles <= 0) throw new IllegalArgumentException("Particle count must be positive");
+        if (referencePosition == null) throw new IllegalArgumentException("Reference position is required");
+        if (random == null) throw new IllegalArgumentException("Random source is required");
         this.numParticles = numParticles;
-        this.refLat = refLat;
-        this.refLon = refLon;
-        this.refAlt = refAlt;
-        this.random = new Random();
+        this.referencePosition = referencePosition;
+        this.random = random;
         this.particles = new ArrayList<>(numParticles);
     }
 
@@ -116,10 +115,6 @@ public class ParticleFilter {
             // Move particle
             p.x += noisyStep * Math.sin(p.theta);
             p.y += noisyStep * Math.cos(p.theta);
-            // Optional: constrain to map area
-            if (mapConstraint != null && !mapConstraint.isInside(p.x, p.y)) {
-                p.weight = 0.0;
-            }
         }
     }
 
@@ -151,10 +146,9 @@ public class ParticleFilter {
      * Suppose we have a GNSS position (gnssLat, gnssLon). Convert it to ENU => (gnssX, gnssY).
      * Then do the same approach as Wi-Fi.
      */
-    public void updateGNSS(double gnssLat, double gnssLon) {
+    public void updateGNSS(GeoPosition gnssPosition) {
         // Convert gnssLat, gnssLon to ENU using reference coords
-        double[] enu = CoordinateTransform.geodeticToEnu(
-                gnssLat, gnssLon, 0.0, refLat, refLon, refAlt);
+        double[] enu = Geodesy.geodeticToEnu(gnssPosition, referencePosition);
         double gnssX = enu[0];
         double gnssY = enu[1];
         double var = gnssStd * gnssStd;
@@ -228,14 +222,14 @@ public class ParticleFilter {
     }
 
     /**
-     * Optionally convert the PF estimate back to LatLng for consistency.
+     * Convert the particle-filter estimate to geodetic coordinates for adapters.
      */
-    public LatLng getEstimateLatLng() {
+    public GeoPosition getEstimatePosition() {
         double[] est = getEstimate2D();
         double estX = est[0];
         double estY = est[1];
         double estZ = 0.0; // assume 0 unless you also track altitude
-        return CoordinateTransform.enuToGeodetic(estX, estY, estZ, refLat, refLon, refAlt);
+        return Geodesy.enuToGeodetic(estX, estY, estZ, referencePosition);
     }
 
     /**
@@ -293,9 +287,6 @@ public class ParticleFilter {
         return angle;
     }
 
-    public void setMapConstraint(MapConstraint mapConstraint) {
-        this.mapConstraint = mapConstraint;
-    }
     // region Setters & getters for parameters
     public void setStepLenNoiseSigma(double stepLenNoiseSigma) {
         this.stepLenNoiseSigma = stepLenNoiseSigma;
@@ -314,7 +305,11 @@ public class ParticleFilter {
     }
 
     public List<Particle> getParticles() {
-        return particles;
+        List<Particle> copies = new ArrayList<>(particles.size());
+        for (Particle particle : particles) {
+            copies.add(new Particle(particle.x, particle.y, particle.theta, particle.weight));
+        }
+        return Collections.unmodifiableList(copies);
     }
     // endregion
 

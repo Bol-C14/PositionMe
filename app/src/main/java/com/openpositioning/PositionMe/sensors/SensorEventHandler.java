@@ -6,7 +6,6 @@ import android.hardware.SensorManager;
 import android.os.SystemClock;
 import android.util.Log;
 
-import com.openpositioning.PositionMe.utils.PathView;
 import com.openpositioning.PositionMe.utils.PdrProcessing;
 
 import java.util.ArrayList;
@@ -23,22 +22,20 @@ import java.util.List;
 public class SensorEventHandler {
 
     private static final float ALPHA = 0.8f;
-    private static final long LARGE_GAP_THRESHOLD_MS = 500;
 
     private final SensorState state;
     private final PdrProcessing pdrProcessing;
-    private final PathView pathView;
     private final TrajectoryRecorder recorder;
 
     // Timestamp tracking
-    private final HashMap<Integer, Long> lastEventTimestamps = new HashMap<>();
     private final HashMap<Integer, Integer> eventCounts = new HashMap<>();
     private long lastStepTime = 0;
     private long bootTime;
     private StepListener stepListener;
 
     interface StepListener {
-        void onStep(float[] pdrPosition, float stepLength, float headingRadians, long timestampMs);
+        void onStep(float[] pdrPosition, float stepLength, float headingRadians,
+                    long elapsedRealtimeMillis, long stepCounter);
     }
 
     void setStepListener(StepListener listener) {
@@ -53,16 +50,13 @@ public class SensorEventHandler {
      *
      * @param state         shared sensor state holder
      * @param pdrProcessing PDR processor for step-length and position calculation
-     * @param pathView      path drawing view for trajectory visualisation
      * @param recorder      trajectory recorder for checking recording state and writing PDR data
-     * @param bootTime      initial boot time offset
+     * @param bootTime      elapsed-realtime origin for relative recording timestamps
      */
     public SensorEventHandler(SensorState state, PdrProcessing pdrProcessing,
-                              PathView pathView, TrajectoryRecorder recorder,
-                              long bootTime) {
+                              TrajectoryRecorder recorder, long bootTime) {
         this.state = state;
         this.pdrProcessing = pdrProcessing;
-        this.pathView = pathView;
         this.recorder = recorder;
         this.bootTime = bootTime;
     }
@@ -73,18 +67,20 @@ public class SensorEventHandler {
      * @param sensorEvent the sensor event to process
      */
     public void handleSensorEvent(SensorEvent sensorEvent) {
-        long currentTime = System.currentTimeMillis();
+        long elapsedRealtimeMillis = SystemClock.elapsedRealtime();
         int sensorType = sensorEvent.sensor.getType();
+        boolean recording = recorder.isRecording();
+        boolean updateElevation = false;
+        float pressureForElevation = 0.0f;
+        float[] stepPosition = null;
+        float stepLength = 0.0f;
+        float headingRadians = 0.0f;
+        long stepCounter = 0L;
 
-        Long lastTimestamp = lastEventTimestamps.get(sensorType);
-        if (lastTimestamp != null) {
-            long timeGap = currentTime - lastTimestamp;
-        }
-
-        lastEventTimestamps.put(sensorType, currentTime);
         eventCounts.put(sensorType, eventCounts.getOrDefault(sensorType, 0) + 1);
 
-        switch (sensorType) {
+        synchronized (state) {
+            switch (sensorType) {
             case Sensor.TYPE_ACCELEROMETER:
                 state.acceleration[0] = sensorEvent.values[0];
                 state.acceleration[1] = sensorEvent.values[1];
@@ -93,12 +89,8 @@ public class SensorEventHandler {
 
             case Sensor.TYPE_PRESSURE:
                 state.pressure = (1 - ALPHA) * state.pressure + ALPHA * sensorEvent.values[0];
-                if (recorder.isRecording()) {
-                    state.elevation = pdrProcessing.updateElevation(
-                            SensorManager.getAltitude(
-                                    SensorManager.PRESSURE_STANDARD_ATMOSPHERE, state.pressure)
-                    );
-                }
+                updateElevation = recording;
+                pressureForElevation = state.pressure;
                 break;
 
             // NOTE: intentional fall-through from GYROSCOPE to LINEAR_ACCELERATION
@@ -156,14 +148,14 @@ public class SensorEventHandler {
                 break;
 
             case Sensor.TYPE_STEP_DETECTOR:
-                long stepTime = SystemClock.uptimeMillis() - bootTime;
+                long stepTime = elapsedRealtimeMillis - bootTime;
 
-                if (currentTime - lastStepTime < 20) {
+                if (elapsedRealtimeMillis - lastStepTime < 20) {
                     Log.e("SensorFusion", "Ignoring step event, too soon after last step event:"
-                            + (currentTime - lastStepTime) + " ms");
+                            + (elapsedRealtimeMillis - lastStepTime) + " ms");
                     break;
                 } else {
-                    lastStepTime = currentTime;
+                    lastStepTime = elapsedRealtimeMillis;
 
                     if (accelMagnitude.isEmpty()) {
                         Log.e("SensorFusion",
@@ -183,20 +175,33 @@ public class SensorEventHandler {
 
                     this.accelMagnitude.clear();
 
-                    StepListener listener = stepListener;
-                    if (listener != null && newCords != null && newCords.length >= 2) {
-                        listener.onStep(newCords.clone(), pdrProcessing.getStepLength(),
-                                state.orientation[0], SystemClock.uptimeMillis() - bootTime);
-                    }
-                    if (recorder.isRecording()) {
-                        this.pathView.drawTrajectory(newCords);
-                        state.stepCounter++;
-                        recorder.addPdrData(
-                                SystemClock.uptimeMillis() - bootTime,
-                                newCords[0], newCords[1]);
+                    if (newCords != null && newCords.length >= 2) {
+                        if (recording) state.stepCounter++;
+                        stepPosition = newCords.clone();
+                        stepLength = pdrProcessing.getStepLength();
+                        headingRadians = state.orientation[0];
+                        stepCounter = state.stepCounter;
                     }
                     break;
                 }
+            }
+        }
+
+        if (updateElevation) {
+            float elevation = pdrProcessing.updateElevation(SensorManager.getAltitude(
+                    SensorManager.PRESSURE_STANDARD_ATMOSPHERE, pressureForElevation));
+            synchronized (state) { state.elevation = elevation; }
+        }
+        if (stepPosition != null) {
+            if (recording) {
+                recorder.addPdrData(elapsedRealtimeMillis - bootTime,
+                        stepPosition[0], stepPosition[1]);
+            }
+            StepListener listener = stepListener;
+            if (listener != null) {
+                listener.onStep(stepPosition, stepLength, headingRadians,
+                        elapsedRealtimeMillis, stepCounter);
+            }
         }
     }
 
@@ -214,7 +219,7 @@ public class SensorEventHandler {
     /**
      * Resets the boot time offset. Called when a new recording starts.
      *
-     * @param newBootTime the new boot time offset from {@link SystemClock#uptimeMillis()}
+     * @param newBootTime the new elapsed-realtime offset
      */
     void resetBootTime(long newBootTime) {
         this.bootTime = newBootTime;

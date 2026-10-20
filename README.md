@@ -42,7 +42,7 @@ A debug build can compile with empty credentials. A working Google Maps key is n
 
 The optional Wi-Fi ML predictor expects `app/src/main/assets/tf_model.tflite` and `bssid2idx.json`; these model assets are not included. Do not assume offline ML prediction is available in the baseline.
 
-See [the roadmap](docs/ROADMAP.md) and [M0 verification](docs/M0_BASELINE.md) for integration decisions, checks, and remaining device validation.
+See [the architecture](docs/ARCHITECTURE.md), [M1 verification](docs/M1_BASELINE.md), [the roadmap](docs/ROADMAP.md) and [M0 verification](docs/M0_BASELINE.md) for integration decisions, checks, and remaining device validation.
 
 ------------------|------------------------|
 | Android Studio   | Arctic Fox (2020.3.1) or newer |
@@ -114,7 +114,7 @@ com.openpositioning.PositionMe/
 Implemented in `SensorFusion.java` using:
 - `EKF.java` – Extended Kalman Filter
 - `ParticleFilter.java` – Sampling-based estimator
-- Fallback ML model: `SensorDataPredictor.java` (TensorFlow Lite)
+- Fallback ML model: `data/ml/TfliteWifiPositionPredictor.java` (TensorFlow Lite)
 
 ### 🔁 Replay
 - Visualize past paths with interactive playback
@@ -134,7 +134,7 @@ Implemented in `SensorFusion.java` using:
 - Monte Carlo sampling-based backup.
 - Used to control drift when EKF fails.
 
-### 4. `SensorDataPredictor.java`
+### 4. `data/ml/TfliteWifiPositionPredictor.java`
 - TFLite fallback ML model using top-20 BSSID+RSSI fingerprints.
 
 

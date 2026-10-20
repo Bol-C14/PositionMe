@@ -33,6 +33,18 @@ public class Wifi {
     public long getFrequency() { return frequency; }
     public boolean isRttEnabled() { return rttEnabled; }
 
+    /** Returns an independent copy for snapshots crossing component boundaries. */
+    public Wifi copy() {
+        Wifi copy = new Wifi();
+        copy.ssid = ssid;
+        copy.bssid = bssid;
+        copy.bssidString = bssidString;
+        copy.level = level;
+        copy.frequency = frequency;
+        copy.rttEnabled = rttEnabled;
+        return copy;
+    }
+
     /**
      * Setters for each property
      */

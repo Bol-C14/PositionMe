@@ -39,6 +39,8 @@ public class TrajectoryRecorder {
     private final ServerCommunications serverCommunications;
     private final SharedPreferences settings;
     private final Context appContext;
+    /** Serializes every access to the non-thread-safe protobuf builder and its session state. */
+    private final Object recorderLock = new Object();
 
     // Recording state
     private volatile boolean saveRecording = false;
@@ -101,13 +103,15 @@ public class TrajectoryRecorder {
                                     MovementSensor mag, MovementSensor baro,
                                     MovementSensor light, MovementSensor prox,
                                     MovementSensor rotation) {
-        this.accelerometerSensor = accel;
-        this.gyroscopeSensor = gyro;
-        this.magnetometerSensor = mag;
-        this.barometerSensor = baro;
-        this.lightSensor = light;
-        this.proximitySensor = prox;
-        this.rotationSensor = rotation;
+        synchronized (recorderLock) {
+            this.accelerometerSensor = accel;
+            this.gyroscopeSensor = gyro;
+            this.magnetometerSensor = mag;
+            this.barometerSensor = baro;
+            this.lightSensor = light;
+            this.proximitySensor = prox;
+            this.rotationSensor = rotation;
+        }
     }
 
     //region Recording lifecycle
@@ -135,30 +139,38 @@ public class TrajectoryRecorder {
             }
 
             long newStartTime = System.currentTimeMillis();
-            long newBootTime = SystemClock.uptimeMillis();
+            long newBootTime = SystemClock.elapsedRealtime();
+            MovementSensor accel;
+            MovementSensor gyro;
+            MovementSensor mag;
+            MovementSensor baro;
+            MovementSensor light;
+            MovementSensor prox;
+            MovementSensor rotation;
+            synchronized (recorderLock) {
+                accel = accelerometerSensor;
+                gyro = gyroscopeSensor;
+                mag = magnetometerSensor;
+                baro = barometerSensor;
+                light = lightSensor;
+                prox = proximitySensor;
+                rotation = rotationSensor;
+            }
             Traj.Trajectory.Builder newTrajectory = Traj.Trajectory.newBuilder()
                     .setAndroidVersion(Build.VERSION.RELEASE)
                     .setTrajectoryVersion(2.0f)
                     .setStartTimestamp(newStartTime)
-                    .setAccelerometerInfo(createInfoBuilder(accelerometerSensor))
-                    .setGyroscopeInfo(createInfoBuilder(gyroscopeSensor))
-                    .setMagnetometerInfo(createInfoBuilder(magnetometerSensor))
-                    .setBarometerInfo(createInfoBuilder(barometerSensor))
-                    .setLightSensorInfo(createInfoBuilder(lightSensor))
-                    .setProximityInfo(createInfoBuilder(proximitySensor))
-                    .setRotationVectorInfo(createInfoBuilder(rotationSensor));
+                    .setAccelerometerInfo(createInfoBuilder(accel))
+                    .setGyroscopeInfo(createInfoBuilder(gyro))
+                    .setMagnetometerInfo(createInfoBuilder(mag))
+                    .setBarometerInfo(createInfoBuilder(baro))
+                    .setLightSensorInfo(createInfoBuilder(light))
+                    .setProximityInfo(createInfoBuilder(prox))
+                    .setRotationVectorInfo(createInfoBuilder(rotation));
 
             pdrProcessing.resetPDR();
             wakeLock.acquire(31 * 60 * 1000L /*31 minutes*/);
 
-            this.absoluteStartTime = newStartTime;
-            this.bootTime = newBootTime;
-            this.counter = 0;
-            this.secondCounter = 0;
-            this.lastWifiFingerprintHash = 0;
-            this.recordedApMacs.clear();
-            this.lastBleFingerprintHash = 0;
-            this.recordedBleMacs.clear();
             if (settings.getBoolean("overwrite_constants", false)) {
                 this.filterCoefficient = Float.parseFloat(
                         settings.getString("accel_filter", "0.96"));
@@ -166,16 +178,32 @@ public class TrajectoryRecorder {
                 this.filterCoefficient = FILTER_COEFFICIENT;
             }
 
-            state.stepCounter = 0;
+            // State is acquired before recorderLock everywhere in this class. Keep this
+            // assignment outside the recorder critical section to avoid lock inversion.
+            synchronized (state) {
+                state.stepCounter = 0;
+            }
             newTimer = new Timer("PositionMe-TrajectoryRecorder", true);
-            this.trajectory = newTrajectory;
-            this.storeTrajectoryTimer = newTimer;
-            this.saveRecording = true;
+            synchronized (recorderLock) {
+                this.absoluteStartTime = newStartTime;
+                this.bootTime = newBootTime;
+                this.counter = 0;
+                this.secondCounter = 0;
+                this.lastWifiFingerprintHash = 0;
+                this.recordedApMacs.clear();
+                this.lastBleFingerprintHash = 0;
+                this.recordedBleMacs.clear();
+                this.trajectory = newTrajectory;
+                this.storeTrajectoryTimer = newTimer;
+                this.saveRecording = true;
+            }
             newTimer.schedule(new StoreDataInTrajectory(), 0, TIME_CONST);
             return true;
         } catch (RuntimeException exception) {
-            saveRecording = false;
-            trajectory = null;
+            synchronized (recorderLock) {
+                saveRecording = false;
+                trajectory = null;
+            }
             if (newTimer != null) newTimer.cancel();
             storeTrajectoryTimer = null;
             releaseWakeLock();
@@ -188,7 +216,9 @@ public class TrajectoryRecorder {
      * Disables saving sensor values to the trajectory object.
      */
     public synchronized void stopRecording() {
-        saveRecording = false;
+        synchronized (recorderLock) {
+            saveRecording = false;
+        }
         if (storeTrajectoryTimer != null) {
             storeTrajectoryTimer.cancel();
             storeTrajectoryTimer = null;
@@ -214,11 +244,15 @@ public class TrajectoryRecorder {
     //region Trajectory metadata
 
     public void setTrajectoryId(String id) {
-        this.trajectoryId = id;
+        synchronized (recorderLock) {
+            this.trajectoryId = id;
+        }
     }
 
     public String getTrajectoryId() {
-        return this.trajectoryId;
+        synchronized (recorderLock) {
+            return this.trajectoryId;
+        }
     }
 
     /**
@@ -228,7 +262,9 @@ public class TrajectoryRecorder {
      * @param buildingId building name from the floorplan API (e.g. "nucleus_building")
      */
     public void setSelectedBuildingId(String buildingId) {
-        this.selectedBuildingId = buildingId;
+        synchronized (recorderLock) {
+            this.selectedBuildingId = buildingId;
+        }
     }
 
     /**
@@ -237,7 +273,9 @@ public class TrajectoryRecorder {
      * @return building name string, or null if no building was selected
      */
     public String getSelectedBuildingId() {
-        return this.selectedBuildingId;
+        synchronized (recorderLock) {
+            return this.selectedBuildingId;
+        }
     }
 
     /**
@@ -245,21 +283,27 @@ public class TrajectoryRecorder {
      * Should be called after startRecording() and setStartGNSSLatitude().
      */
     public void writeInitialMetadata() {
-        if (trajectory == null) return;
-
-        if (trajectoryId != null && !trajectoryId.isEmpty()) {
-            trajectory.setTrajectoryId(trajectoryId);
+        SensorSnapshot snapshot;
+        synchronized (state) {
+            snapshot = new SensorSnapshot(SystemClock.elapsedRealtime(), state);
         }
+        float[] startLocation = snapshot.getStartLocation();
+        synchronized (recorderLock) {
+            if (!saveRecording || trajectory == null) return;
 
-        if (state.startLocation != null
-                && (state.startLocation[0] != 0 || state.startLocation[1] != 0)) {
-            trajectory.setInitialPosition(
-                    Traj.GNSSPosition.newBuilder()
-                            .setRelativeTimestamp(0)
-                            .setLatitude(state.startLocation[0])
-                            .setLongitude(state.startLocation[1])
-                            .setAltitude(0.0)
-            );
+            if (trajectoryId != null && !trajectoryId.isEmpty()) {
+                trajectory.setTrajectoryId(trajectoryId);
+            }
+
+            if (startLocation[0] != 0 || startLocation[1] != 0) {
+                trajectory.setInitialPosition(
+                        Traj.GNSSPosition.newBuilder()
+                                .setRelativeTimestamp(0)
+                                .setLatitude(startLocation[0])
+                                .setLongitude(startLocation[1])
+                                .setAltitude(0.0)
+                );
+            }
         }
     }
 
@@ -271,7 +315,8 @@ public class TrajectoryRecorder {
      * Adds a PDR position entry to the trajectory.
      */
     public void addPdrData(long relativeTimestamp, float x, float y) {
-        if (trajectory != null) {
+        synchronized (recorderLock) {
+            if (!saveRecording || trajectory == null) return;
             trajectory.addPdrData(Traj.RelativePosition.newBuilder()
                     .setRelativeTimestamp(relativeTimestamp)
                     .setX(x)
@@ -283,22 +328,24 @@ public class TrajectoryRecorder {
      * Adds a GNSS reading to the trajectory.
      */
     public void addGnssData(Location location) {
-        if (trajectory == null || !saveRecording) return;
+        if (location == null) return;
+        synchronized (recorderLock) {
+            if (trajectory == null || !saveRecording) return;
 
-        long relTs = System.currentTimeMillis() - absoluteStartTime;
+            long relTs = SystemClock.elapsedRealtime() - bootTime;
+            Traj.GNSSPosition.Builder pos = Traj.GNSSPosition.newBuilder()
+                    .setRelativeTimestamp(relTs)
+                    .setLatitude(location.getLatitude())
+                    .setLongitude(location.getLongitude())
+                    .setAltitude(location.getAltitude());
 
-        Traj.GNSSPosition.Builder pos = Traj.GNSSPosition.newBuilder()
-                .setRelativeTimestamp(relTs)
-                .setLatitude(location.getLatitude())
-                .setLongitude(location.getLongitude())
-                .setAltitude(location.getAltitude());
-
-        trajectory.addGnssData(Traj.GNSSReading.newBuilder()
-                .setPosition(pos)
-                .setAccuracy(location.getAccuracy())
-                .setSpeed(location.getSpeed())
-                .setBearing(location.getBearing())
-                .setProvider(location.getProvider()));
+            trajectory.addGnssData(Traj.GNSSReading.newBuilder()
+                    .setPosition(pos)
+                    .setAccuracy(location.getAccuracy())
+                    .setSpeed(location.getSpeed())
+                    .setBearing(location.getBearing())
+                    .setProvider(location.getProvider()));
+        }
     }
 
     /**
@@ -307,7 +354,9 @@ public class TrajectoryRecorder {
      * @param wifiList the list of scanned WiFi access points
      */
     public void addWifiFingerprint(List<Wifi> wifiList) {
-        if (!saveRecording || wifiList == null || wifiList.isEmpty()) return;
+        if (wifiList == null || wifiList.isEmpty()) return;
+        synchronized (recorderLock) {
+        if (!saveRecording || trajectory == null) return;
 
         int currentHash = 0;
         for (Wifi data : wifiList) {
@@ -316,14 +365,14 @@ public class TrajectoryRecorder {
 
         if (currentHash != lastWifiFingerprintHash) {
             lastWifiFingerprintHash = currentHash;
-            long relTs = SystemClock.uptimeMillis() - bootTime;
+            long relTs = SystemClock.elapsedRealtime() - bootTime;
 
             Traj.Fingerprint.Builder fp = Traj.Fingerprint.newBuilder()
                     .setRelativeTimestamp(relTs);
 
             for (Wifi data : wifiList) {
                 fp.addRfScans(Traj.RFScan.newBuilder()
-                        .setRelativeTimestamp(SystemClock.uptimeMillis() - bootTime)
+                        .setRelativeTimestamp(SystemClock.elapsedRealtime() - bootTime)
                         .setMac(data.getBssid())
                         .setRssi(data.getLevel()));
 
@@ -339,13 +388,15 @@ public class TrajectoryRecorder {
 
             trajectory.addWifiFingerprints(fp);
         }
+        }
     }
 
     /**
      * Adds a test point (user-placed ground truth marker) to the trajectory.
      */
     public void addTestPoint(long pressTimestampMs, double lat, double lng) {
-        if (trajectory == null) return;
+        synchronized (recorderLock) {
+        if (trajectory == null || !saveRecording) return;
 
         long startTs = trajectory.getStartTimestamp();
         long rel = pressTimestampMs - startTs;
@@ -358,6 +409,7 @@ public class TrajectoryRecorder {
                         .setLongitude(lng)
                         .setAltitude(0.0)
         );
+        }
     }
 
     /**
@@ -367,7 +419,9 @@ public class TrajectoryRecorder {
      * @param bleList the list of scanned BLE devices
      */
     public void addBleFingerprint(List<BleDevice> bleList) {
-        if (!saveRecording || trajectory == null || bleList == null || bleList.isEmpty()) return;
+        if (bleList == null || bleList.isEmpty()) return;
+        synchronized (recorderLock) {
+        if (!saveRecording || trajectory == null) return;
 
         int currentHash = 0;
         for (BleDevice d : bleList) {
@@ -378,14 +432,14 @@ public class TrajectoryRecorder {
 
         if (currentHash != lastBleFingerprintHash) {
             lastBleFingerprintHash = currentHash;
-            long relTs = SystemClock.uptimeMillis() - bootTime;
+            long relTs = SystemClock.elapsedRealtime() - bootTime;
 
             Traj.Fingerprint.Builder fp = Traj.Fingerprint.newBuilder()
                     .setRelativeTimestamp(relTs);
 
             for (BleDevice d : bleList) {
                 fp.addRfScans(Traj.RFScan.newBuilder()
-                        .setRelativeTimestamp(SystemClock.uptimeMillis() - bootTime)
+                        .setRelativeTimestamp(SystemClock.elapsedRealtime() - bootTime)
                         .setMac(d.getMacAsLong())
                         .setRssi(d.getRssi()));
 
@@ -414,6 +468,7 @@ public class TrajectoryRecorder {
 
             trajectory.addBleFingerprints(fp);
         }
+        }
     }
 
     /**
@@ -425,16 +480,16 @@ public class TrajectoryRecorder {
      * @param rssi          RSSI in dBm
      */
     public void addWifiRttReading(long mac, float distanceMm, float distanceStdMm, int rssi) {
-        if (!saveRecording || trajectory == null) return;
-
-        long relTs = SystemClock.uptimeMillis() - bootTime;
-
-        trajectory.addWifiRttData(Traj.WiFiRTTReading.newBuilder()
-                .setRelativeTimestamp(relTs)
-                .setMac(mac)
-                .setDistance(distanceMm)
-                .setDistanceStd(distanceStdMm)
-                .setRssi(rssi));
+        synchronized (recorderLock) {
+            if (!saveRecording || trajectory == null) return;
+            long relTs = SystemClock.elapsedRealtime() - bootTime;
+            trajectory.addWifiRttData(Traj.WiFiRTTReading.newBuilder()
+                    .setRelativeTimestamp(relTs)
+                    .setMac(mac)
+                    .setDistance(distanceMm)
+                    .setDistanceStd(distanceStdMm)
+                    .setRssi(rssi));
+        }
     }
 
     /**
@@ -463,8 +518,9 @@ public class TrajectoryRecorder {
      * @return the built trajectory, or null if no recording was started
      */
     public Traj.Trajectory buildTrajectory() {
-        if (trajectory == null) return null;
-        return trajectory.build();
+        synchronized (recorderLock) {
+            return trajectory == null ? null : trajectory.build();
+        }
     }
 
     /**
@@ -493,7 +549,11 @@ public class TrajectoryRecorder {
             Log.w("TrajectoryRecorder", "No trajectory is available to upload");
             return;
         }
-        this.serverCommunications.sendTrajectory(built, selectedBuildingId);
+        String buildingId;
+        synchronized (recorderLock) {
+            buildingId = selectedBuildingId;
+        }
+        this.serverCommunications.sendTrajectory(built, buildingId);
     }
 
     //endregion
@@ -501,11 +561,15 @@ public class TrajectoryRecorder {
     //region Getters
 
     public long getBootTime() {
-        return bootTime;
+        synchronized (recorderLock) {
+            return bootTime;
+        }
     }
 
     public long getAbsoluteStartTime() {
-        return absoluteStartTime;
+        synchronized (recorderLock) {
+            return absoluteStartTime;
+        }
     }
 
     public ServerCommunications getServerCommunications() {
@@ -543,8 +607,20 @@ public class TrajectoryRecorder {
     private class StoreDataInTrajectory extends TimerTask {
         @Override
         public void run() {
-            if (saveRecording) {
-                long t = SystemClock.uptimeMillis() - bootTime;
+            // Copy all sensor values while holding only the state lock, then release it
+            // before touching recorderLock. Sensor callbacks may update state and append
+            // PDR/other data, so this ordering prevents lock inversion.
+            SensorSnapshot snapshot;
+            synchronized (state) {
+                snapshot = new SensorSnapshot(SystemClock.elapsedRealtime(), state);
+            }
+            synchronized (recorderLock) {
+                if (!saveRecording || trajectory == null) return;
+                long t = snapshot.getElapsedRealtimeMillis() - bootTime;
+                float[] acceleration = snapshot.getAcceleration();
+                float[] angularVelocity = snapshot.getAngularVelocity();
+                float[] rotation = snapshot.getRotation();
+                float[] magneticField = snapshot.getMagneticField();
 
                 // IMU data (Vector3 + Quaternion)
                 trajectory.addImuData(
@@ -552,24 +628,24 @@ public class TrajectoryRecorder {
                                 .setRelativeTimestamp(t)
                                 .setAcc(
                                         Traj.Vector3.newBuilder()
-                                                .setX(state.acceleration[0])
-                                                .setY(state.acceleration[1])
-                                                .setZ(state.acceleration[2])
+                                                .setX(acceleration[0])
+                                                .setY(acceleration[1])
+                                                .setZ(acceleration[2])
                                 )
                                 .setGyr(
                                         Traj.Vector3.newBuilder()
-                                                .setX(state.angularVelocity[0])
-                                                .setY(state.angularVelocity[1])
-                                                .setZ(state.angularVelocity[2])
+                                                .setX(angularVelocity[0])
+                                                .setY(angularVelocity[1])
+                                                .setZ(angularVelocity[2])
                                 )
                                 .setRotationVector(
                                         Traj.Quaternion.newBuilder()
-                                                .setX(state.rotation[0])
-                                                .setY(state.rotation[1])
-                                                .setZ(state.rotation[2])
-                                                .setW(state.rotation[3])
+                                                .setX(rotation[0])
+                                                .setY(rotation[1])
+                                                .setZ(rotation[2])
+                                                .setW(rotation[3])
                                 )
-                                .setStepCount(state.stepCounter)
+                                .setStepCount(snapshot.getStepCounter())
                 );
 
                 // Magnetometer data
@@ -578,9 +654,9 @@ public class TrajectoryRecorder {
                                 .setRelativeTimestamp(t)
                                 .setMag(
                                         Traj.Vector3.newBuilder()
-                                                .setX(state.magneticField[0])
-                                                .setY(state.magneticField[1])
-                                                .setZ(state.magneticField[2])
+                                                .setX(magneticField[0])
+                                                .setY(magneticField[1])
+                                                .setZ(magneticField[2])
                                 )
                 );
 
@@ -592,7 +668,7 @@ public class TrajectoryRecorder {
                         trajectory.addPressureData(
                                 Traj.BarometerReading.newBuilder()
                                         .setRelativeTimestamp(t)
-                                        .setPressure(state.pressure)
+                                        .setPressure(snapshot.getPressure())
                         );
                     }
 
@@ -600,7 +676,7 @@ public class TrajectoryRecorder {
                         trajectory.addLightData(
                                 Traj.LightReading.newBuilder()
                                         .setRelativeTimestamp(t)
-                                        .setLight(state.light)
+                                        .setLight(snapshot.getLight())
                         );
                     }
 
@@ -608,7 +684,7 @@ public class TrajectoryRecorder {
                         trajectory.addProximityData(
                                 Traj.ProximityReading.newBuilder()
                                         .setRelativeTimestamp(t)
-                                        .setDistance(state.proximity)
+                                        .setDistance(snapshot.getProximity())
                         );
                     }
                 } else {

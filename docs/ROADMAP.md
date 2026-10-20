@@ -23,3 +23,7 @@ Continue commits on the working branch. Open one PR when a coherent milestone is
 5. Remove privileged client credentials through a server authentication design.
 
 Early development: hosted CI is disabled by user instruction (2026-10-20). Local build/test/lint verification remains required. The disabled workflow is retained in docs only as a future reference.
+
+## Current checkpoint
+
+M1 positioning/recording ownership is implemented; see M1_BASELINE.md and ARCHITECTURE.md. Local verification replaces hosted CI during this phase. M2 is next; the remaining Android facade and raw-event capture limitations are recorded explicitly.

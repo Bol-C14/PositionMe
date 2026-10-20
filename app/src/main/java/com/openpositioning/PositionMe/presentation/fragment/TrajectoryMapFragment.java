@@ -27,6 +27,7 @@ import com.google.android.material.floatingactionbutton.FloatingActionButton;
 import com.openpositioning.PositionMe.R;
 import com.openpositioning.PositionMe.presentation.trajmap.TrajectoryMapMaker;
 import com.openpositioning.PositionMe.sensors.SensorFusion;
+import com.openpositioning.PositionMe.sensors.SensorFusionEvent;
 import com.openpositioning.PositionMe.presentation.trajmap.BuildingPolygonPlotter;
 import com.openpositioning.PositionMe.presentation.trajmap.TrajectoryPlotter;
 import com.openpositioning.PositionMe.presentation.trajmap.TrajectoryPlotter.GnssTrajectoryPlotter;
@@ -35,6 +36,7 @@ import com.openpositioning.PositionMe.utils.UtilFunctions;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Abstract base class for fragments displaying a map with trajectory data.
@@ -54,7 +56,7 @@ public abstract class TrajectoryMapFragment extends Fragment {
     protected GnssTrajectoryPlotter gnssTrajectoryPlotter;
 
     // Flag to track if GNSS is enabled
-    protected boolean isGnssOn = false;
+    protected volatile boolean isGnssOn = false;
 
     // SensorFusion instance for managing sensor data and fusion
     protected SensorFusion sensorFusion;
@@ -92,6 +94,10 @@ public abstract class TrajectoryMapFragment extends Fragment {
     private static final long AUTO_FLOOR_CHECK_INTERVAL_MS = 1000L;
     private static final long AUTO_FLOOR_DEBOUNCE_MS = 3000L;
     private final Handler autoFloorHandler = new Handler(Looper.getMainLooper());
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private AutoCloseable sensorFusionSubscription;
+    private volatile long viewGeneration;
+    private final AtomicLong lastGnssUiUpdateElapsedMillis = new AtomicLong();
     private Runnable autoFloorTask;
     private int lastCandidateFloor = Integer.MIN_VALUE;
     private long lastCandidateTime;
@@ -127,7 +133,6 @@ public abstract class TrajectoryMapFragment extends Fragment {
 
         // Initialize sensorFusion
         sensorFusion = SensorFusion.getInstance();
-        sensorFusion.setTrajectoryMapFragment(this);
 
         // Set up auto floor button that toggles between auto and manual floor control
         autoFloorButton.setOnClickListener(v -> {
@@ -203,11 +208,63 @@ public abstract class TrajectoryMapFragment extends Fragment {
             });
         }
 
-        sensorFusion.setOnWifiFloorChangedListener(newFloor -> {
-            if (isAutoFloorOn) autoFloorHandler.post(this::evaluateAutoFloor);
-        });
+    }
 
-        sensorFusion.setTrajectoryMapFragment(this);
+    @Override
+    public void onStart() {
+        super.onStart();
+        viewGeneration++;
+        if (sensorFusion == null) sensorFusion = SensorFusion.getInstance();
+        if (sensorFusionSubscription != null) return;
+        sensorFusionSubscription = sensorFusion.subscribe(this::onSensorFusionEvent);
+    }
+
+    @Override
+    public void onStop() {
+        viewGeneration++;
+        closeSensorFusionSubscription();
+        super.onStop();
+    }
+
+    private void onSensorFusionEvent(@NonNull SensorFusionEvent event) {
+        if (event.getKind() == SensorFusionEvent.Kind.SENSOR_STATE) {
+            if (!isGnssOn) return;
+            com.openpositioning.PositionMe.sensors.SensorSnapshot snapshot = event.getSnapshot();
+            if (snapshot == null || snapshot.getLatitude() == 0f || snapshot.getLongitude() == 0f) return;
+            long eventTime = event.getElapsedRealtimeMillis();
+            while (true) {
+                long previous = lastGnssUiUpdateElapsedMillis.get();
+                if (eventTime - previous < 250L) return;
+                if (lastGnssUiUpdateElapsedMillis.compareAndSet(previous, eventTime)) break;
+            }
+        }
+        long callbackGeneration = viewGeneration;
+        mainHandler.post(() -> {
+            if (callbackGeneration != viewGeneration || getView() == null || !isAdded()) return;
+            if (event.getKind() == SensorFusionEvent.Kind.POSITION_ESTIMATE) {
+                com.openpositioning.PositionMe.domain.GeoPosition position =
+                        event.getPositionEstimate().getPosition();
+                updateFusionLocation(new LatLng(position.getLatitudeDegrees(),
+                        position.getLongitudeDegrees()),
+                        (float) Math.toDegrees(event.getPositionEstimate().getHeadingRadians()));
+            } else if (event.getKind() == SensorFusionEvent.Kind.WIFI_FLOOR) {
+                if (isAutoFloorOn) autoFloorHandler.post(this::evaluateAutoFloor);
+            } else if (event.getKind() == SensorFusionEvent.Kind.SENSOR_STATE) {
+                com.openpositioning.PositionMe.sensors.SensorSnapshot snapshot = event.getSnapshot();
+                if (snapshot != null) updateGNSS(new LatLng(snapshot.getLatitude(), snapshot.getLongitude()));
+            }
+        });
+    }
+
+    private void closeSensorFusionSubscription() {
+        if (sensorFusionSubscription == null) return;
+        try {
+            sensorFusionSubscription.close();
+        } catch (Exception exception) {
+            Log.w("TrajectoryMapFragment", "Unable to close sensor event subscription", exception);
+        } finally {
+            sensorFusionSubscription = null;
+        }
     }
 
     /**
@@ -636,6 +693,9 @@ public abstract class TrajectoryMapFragment extends Fragment {
     @Override
     public void onDestroyView() {
         stopAutoFloor();
+        viewGeneration++;
+        closeSensorFusionSubscription();
+        mainHandler.removeCallbacksAndMessages(null);
         super.onDestroyView();
     }
 
