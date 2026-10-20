@@ -11,12 +11,12 @@ import android.net.NetworkInfo;
 import android.net.wifi.ScanResult;
 import android.net.wifi.WifiManager;
 import android.provider.Settings;
-import android.util.Log;
 import android.widget.Toast;
 
 import androidx.core.app.ActivityCompat;
 
 import java.util.ArrayList;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.List;
 import java.util.Timer;
 import java.util.TimerTask;
@@ -52,11 +52,17 @@ public class WifiDataProcessor implements Observable {
     //List of nearby networks
     private Wifi[] wifiData;
 
+    // RTT-eligible ScanResults from the most recent scan (for RttManager)
+    private volatile List<ScanResult> rttEligibleScanResults = new ArrayList<>();
+
     //List of observers to be notified when changes are detected
-    private ArrayList<Observer> observers;
+    private final List<Observer> observers = new CopyOnWriteArrayList<>();
 
     // Timer object
     private Timer scanWifiDataTimer;
+
+    private boolean listening = false;
+    private boolean receiverRegistered = false;
 
     /**
      * Public default constructor of the WifiDataProcessor class.
@@ -78,8 +84,7 @@ public class WifiDataProcessor implements Observable {
         // Check for permissions
         boolean permissionsGranted = checkWifiPermissions();
         this.wifiManager = (WifiManager) context.getSystemService(Context.WIFI_SERVICE);
-        this.scanWifiDataTimer = new Timer();
-        this.observers = new ArrayList<>();
+        this.scanWifiDataTimer = null;
 
         // Decreapted method after API 29
         // Turn on wifi if it is currently disabled
@@ -88,9 +93,9 @@ public class WifiDataProcessor implements Observable {
 //      //      wifiManager.setWifiEnabled(true);
 //      //  }
 
-        // Start wifi scan and return results via broadcast
-        if(permissionsGranted) {
-            this.scanWifiDataTimer.schedule(new scheduledWifiScan(), 0, scanInterval);
+        // Start WiFi scanning when permissions are already available.
+        if (permissionsGranted) {
+            startListening();
         }
 
         //Inform the user if wifi throttling is enabled on their device
@@ -124,21 +129,48 @@ public class WifiDataProcessor implements Observable {
 
             //Collect the list of nearby wifis
             List<ScanResult> wifiScanList = wifiManager.getScanResults();
+            if (wifiScanList == null) wifiScanList = new ArrayList<>();
             //Stop receiver as scan is complete
-            //context.unregisterReceiver(this);
-
-            //Loop though each item in wifi list
-            wifiData = new Wifi[wifiScanList.size()];
-            for(int i = 0; i < wifiScanList.size(); i++) {
-                wifiData[i] = new Wifi();
-                //Convert String mac address to an integer
-                String wifiMacAddress = wifiScanList.get(i).BSSID;
-                long intMacAddress = convertBssidToLong(wifiMacAddress);
-                //store mac address and rssi of wifi
-                wifiData[i].setBssid(intMacAddress);
-                wifiData[i].setLevel(wifiScanList.get(i).level);
+            try {
+                context.unregisterReceiver(this);
+            } catch (IllegalArgumentException ignored) {
+                // Receiver may already be unregistered.
             }
-            Log.d("WifiDataProcessor", "Scan result received: size = " + wifiScanList.size());
+            receiverRegistered = false;
+
+            // Collect RTT-eligible ScanResults for RttManager
+            List<ScanResult> rttEligible = new ArrayList<>();
+            for (ScanResult sr : wifiScanList) {
+                if (sr.BSSID != null && sr.is80211mcResponder()) {
+                    rttEligible.add(sr);
+                }
+            }
+            rttEligibleScanResults = rttEligible;
+
+            // Deduplicate by BSSID: keep only the strongest signal per MAC
+            java.util.Map<Long, Wifi> dedupMap = new java.util.LinkedHashMap<>();
+            for (int i = 0; i < wifiScanList.size(); i++) {
+                ScanResult sr = wifiScanList.get(i);
+                String wifiMacAddress = sr.BSSID;
+                if (wifiMacAddress == null || wifiMacAddress.length() != 17) continue;
+                long intMacAddress = convertBssidToLong(wifiMacAddress);
+
+                Wifi existing = dedupMap.get(intMacAddress);
+                // Keep the entry with the stronger signal (higher RSSI)
+                if (existing == null || sr.level > existing.getLevel()) {
+                    Wifi w = new Wifi();
+                    w.setBssid(intMacAddress);
+                    w.setBssidString(wifiMacAddress);
+                    w.setLevel(sr.level);
+                    w.setSsid(sr.SSID != null ? sr.SSID : "");
+                    w.setFrequency(sr.frequency);
+                    // Check if the AP supports WiFi RTT (802.11mc)
+                    w.setRttEnabled(sr.is80211mcResponder());
+                    dedupMap.put(intMacAddress, w);
+                }
+            }
+
+            wifiData = dedupMap.values().toArray(new Wifi[0]);
 
             //Notify observers of change in wifiData variable
             notifyObservers(0);
@@ -155,30 +187,14 @@ public class WifiDataProcessor implements Observable {
      * @return                      Long variable with decimal conversion of the mac address
      */
     private long convertBssidToLong(String wifiMacAddress){
-        long intMacAddress =0;
-        int colonCount =5;
-        //Loop through each character
-        for(int j =0; j<17; j++){
-            //Identify character
-            char macByte = wifiMacAddress.charAt(j);
-            //convert string hex mac address with colons to decimal long integer
-            if(macByte != ':'){
-                //For characters 0-9 subtract 48 from ASCII code and multiply by 16^position
-                if((int) macByte >= 48 && (int) macByte <= 57){
-                    intMacAddress = intMacAddress + (((int)macByte-48)*((long)Math.pow(16,16-j-colonCount)));
-                }
-
-                //For characters a-f subtract 87 (=97-10) from ASCII code and multiply by 16^index
-                else if ((int) macByte >= 97 && (int) macByte <= 102){
-                    intMacAddress = intMacAddress + (((int)macByte-87)*((long)Math.pow(16,16-j-colonCount)));
-                }
-            }
-            else
-                //coloncount is used to obtain the index of each character
-                colonCount --;
+        if (wifiMacAddress == null) return 0L;
+        String compact = wifiMacAddress.replace(":", "");
+        if (compact.length() != 12) return 0L;
+        try {
+            return Long.parseUnsignedLong(compact, 16);
+        } catch (NumberFormatException ignored) {
+            return 0L;
         }
-
-        return intMacAddress;
     }
 
     /**
@@ -212,13 +228,14 @@ public class WifiDataProcessor implements Observable {
      */
     private void startWifiScan() {
         //Check settings for wifi permissions
-        if(checkWifiPermissions()) {
-            //if(sharedPreferences.getBoolean("wifi", false)) {
-            //Register broadcast receiver for wifi scans
-            context.registerReceiver(wifiScanReceiver, new IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION));
+        if (checkWifiPermissions()) {
+            // Register broadcast receiver for WiFi scans only once per scan cycle.
+            if (!receiverRegistered) {
+                context.registerReceiver(wifiScanReceiver,
+                        new IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION));
+                receiverRegistered = true;
+            }
             wifiManager.startScan();
-
-            //}
         }
     }
 
@@ -226,7 +243,12 @@ public class WifiDataProcessor implements Observable {
      * Initiate scans for nearby networks every 5 seconds.
      * The method declares a new timer instance to schedule a scan for nearby wifis every 5 seconds.
      */
-    public void startListening() {
+    public synchronized void startListening() {
+        if (listening) {
+            return;
+        }
+        listening = true;
+
         this.scanWifiDataTimer = new Timer();
         this.scanWifiDataTimer.scheduleAtFixedRate(new scheduledWifiScan(), 0, scanInterval);
     }
@@ -236,9 +258,25 @@ public class WifiDataProcessor implements Observable {
      * The method unregisters the broadcast receiver associated with the wifi scans and cancels the
      * timer so that new scans are not initiated.
      */
-    public void stopListening() {
-        context.unregisterReceiver(wifiScanReceiver);
-        this.scanWifiDataTimer.cancel();
+    public synchronized void stopListening() {
+        if (!listening) {
+            return;
+        }
+        listening = false;
+
+        if (receiverRegistered) {
+            try {
+                context.unregisterReceiver(wifiScanReceiver);
+            } catch (IllegalArgumentException ignored) {
+                // Receiver was already unregistered.
+            }
+            receiverRegistered = false;
+        }
+
+        if (this.scanWifiDataTimer != null) {
+            this.scanWifiDataTimer.cancel();
+            this.scanWifiDataTimer = null;
+        }
     }
 
     /**
@@ -277,8 +315,9 @@ public class WifiDataProcessor implements Observable {
      */
     @Override
     public void notifyObservers(int idx) {
-        for(Observer o : observers) {
-            o.update(wifiData);
+        Wifi[] snapshot = wifiData == null ? new Wifi[0] : wifiData.clone();
+        for (Observer observer : observers) {
+            observer.update(snapshot.clone());
         }
     }
 
@@ -294,6 +333,16 @@ public class WifiDataProcessor implements Observable {
         public void run() {
             startWifiScan();
         }
+    }
+
+    /**
+     * Returns the list of RTT-eligible (802.11mc) ScanResults from the most recent WiFi scan.
+     * Used by {@link RttManager} to perform WiFi RTT ranging.
+     *
+     * @return list of ScanResult objects that support 802.11mc, or empty list if none
+     */
+    public List<ScanResult> getRttEligibleScanResults() {
+        return new ArrayList<>(rttEligibleScanResults);
     }
 
     /**

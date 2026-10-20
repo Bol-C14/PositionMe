@@ -1,106 +1,78 @@
 package com.openpositioning.PositionMe.sensors;
 
-import android.Manifest;
 import android.content.Context;
 import android.content.SharedPreferences;
-import android.content.pm.PackageManager;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
 import android.location.Location;
 import android.location.LocationListener;
-import android.location.LocationManager;
-import android.os.Build;
-import android.os.PowerManager;
-import android.os.SystemClock;
 import android.util.Log;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
+import android.widget.Toast;
 
 import androidx.annotation.NonNull;
-import androidx.core.app.ActivityCompat;
 import androidx.preference.PreferenceManager;
 
 import com.google.android.gms.maps.model.LatLng;
-import com.openpositioning.PositionMe.domain.ParticleFilter;
+import com.openpositioning.PositionMe.data.remote.FloorplanApiClient;
 import com.openpositioning.PositionMe.data.remote.WiFiPositioning;
-import com.openpositioning.PositionMe.presentation.activity.MainActivity;
+import com.openpositioning.PositionMe.domain.EKF;
+import com.openpositioning.PositionMe.domain.ParticleFilter;
 import com.openpositioning.PositionMe.utils.CoordinateTransform;
+import org.json.JSONObject;
+import java.util.function.Consumer;
+import com.openpositioning.PositionMe.presentation.activity.MainActivity;
+import com.openpositioning.PositionMe.service.SensorCollectionService;
 import com.openpositioning.PositionMe.utils.PathView;
 import com.openpositioning.PositionMe.utils.PdrProcessing;
+import com.openpositioning.PositionMe.utils.TrajectoryValidator;
 import com.openpositioning.PositionMe.data.remote.ServerCommunications;
-import com.openpositioning.PositionMe.Traj;
-import com.openpositioning.PositionMe.presentation.fragment.SettingsFragment;
-import com.openpositioning.PositionMe.domain.EKF;
-
-import org.json.JSONException;
-import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Timer;
-import java.util.TimerTask;
-import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
-
 
 /**
  * The SensorFusion class is the main data gathering and processing class of the application.
  *
- * It follows the singleton design pattern to ensure that every fragment and process has access to
- * the same date and sensor instances. Hence it has a private constructor, and must be initialised
- * with the application context after creation.
- * <p>
- * The class implements {@link SensorEventListener} and has instances of {@link MovementSensor} for
- * every device type necessary for data collection. As such, it implements the
- * {@link SensorFusion#onSensorChanged(SensorEvent)} function, and process and records the data
- * provided by the sensor hardware, which are stored in a {@link Traj} object. Data is read
- * continuously but is only saved to the trajectory when recording is enabled.
- * <p>
- * The class provides a number of setters and getters so that other classes can have access to the
- * sensor data and influence the behaviour of data collection.
+ * <p>It follows the singleton design pattern to ensure that every fragment and process has access
+ * to the same data and sensor instances. Internally it delegates to specialised modules:</p>
+ * <ul>
+ *   <li>{@link SensorState} &ndash; shared sensor data holder</li>
+ *   <li>{@link SensorEventHandler} &ndash; sensor event dispatch (switch logic)</li>
+ *   <li>{@link TrajectoryRecorder} &ndash; recording lifecycle &amp; protobuf construction</li>
+ *   <li>{@link WifiPositionManager} &ndash; WiFi scan processing &amp; positioning</li>
+ * </ul>
  *
- * @author Michal Dvorak
- * @author Mate Stodulka
- * @author Virginia Cangelosi
+ * <p>The public API is unchanged &ndash; all external callers continue to use
+ * {@code SensorFusion.getInstance().method()}.</p>
  */
-public class SensorFusion implements SensorEventListener, Observer {
-
-    // Store the last event timestamps for each sensor type
-    private HashMap<Integer, Long> lastEventTimestamps = new HashMap<>();
-    private HashMap<Integer, Integer> eventCounts = new HashMap<>();
-    // Callback interface for floor change notifications
-    private Consumer<Integer> wifiFloorChangedListener;
-
-    long maxReportLatencyNs = 0;  // Disable batching to deliver events immediately
-
-    // Define a threshold for large time gaps (in milliseconds)
-    private static final long LARGE_GAP_THRESHOLD_MS = 500;  // Adjust this if needed
+public class SensorFusion implements SensorEventListener {
 
     //region Static variables
-    // Singleton Class
     private static final SensorFusion sensorFusion = new SensorFusion();
-    // Static constant for calculations with milliseconds
-    private static final long TIME_CONST = 10;
-    // Coefficient for fusing gyro-based and magnetometer-based orientation
-    public static final float FILTER_COEFFICIENT = 0.96f;
-    //Tuning value for low pass filter
-    private static final float ALPHA = 0.8f;
-    // String for creating WiFi fingerprint JSO N object
-    private static final String WIFI_FINGERPRINT= "wf";
     //endregion
 
     //region Instance variables
-    // Keep device awake while recording
-    private PowerManager.WakeLock wakeLock;
     private Context appContext;
+    private boolean contextInitialized;
 
-    // Settings
-    private SharedPreferences settings;
+    // Shared sensor state
+    private final SensorState state = new SensorState();
 
-    // Movement sensor instances
+    // Internal modules
+    private SensorEventHandler eventHandler;
+    private TrajectoryRecorder recorder;
+    private WifiPositionManager wifiPositionManager;
+
+    // Movement sensor instances (lifecycle managed here)
     private MovementSensor accelerometerSensor;
     private MovementSensor barometerSensor;
     private MovementSensor gyroscopeSensor;
@@ -111,143 +83,53 @@ public class SensorFusion implements SensorEventListener, Observer {
     private MovementSensor rotationSensor;
     private MovementSensor gravitySensor;
     private MovementSensor linearAccelerationSensor;
-    // Other data recording
+
+    // Non-sensor data sources
     private WifiDataProcessor wifiProcessor;
+    private BleDataProcessor bleProcessor;
     private GNSSDataProcessor gnssProcessor;
-    // Data listener
+    private RttManager rttManager;
+    private BleRttManager bleRttManager;
     private final LocationListener locationListener;
 
-    // Server communication class for sending data
-    private ServerCommunications serverCommunications;
-    // Trajectory object containing all data
-    private Traj.Trajectory.Builder trajectory;
-
-    // Settings
-    private boolean saveRecording;
-    private float filter_coefficient;
-    // Variables to help with timed events
-    private long absoluteStartTime;
-    private long bootTime;
-    long lastStepTime = 0;
-    // Timer object for scheduling data recording
-    private Timer storeTrajectoryTimer;
-    // Counters for dividing timer to record data every 1 second/ every 5 seconds
-    private int counter;
-    private int secondCounter;
-
-    // Sensor values
-    private float[] acceleration;
-    float[] filteredAcc;
-    private float[] gravity;
-    private float[] magneticField;
-    private float[] angularVelocity;
-    float[] orientation;
-    float[] rotation;
-    float pressure;
-    float light;
-    float proximity;
-    private float[] R;
-    int stepCounter ;
-    // Derived values
-    private float elevation;
-    private boolean elevator;
-    // Location values
-    private float latitude;
-    private float longitude;
-    private float[] startLocation;
-    // Wifi values
-    private List<Wifi> wifiList;
-    private long lastOpUpdateTime = 0; // Stores the timestamp of the last WiFi/GNSS update
-    private long lastGnssUpdateTime = 0; // Record the last GNSS update time
-    private LatLng wifiPos;
-
-
-    // Over time accelerometer magnitude values since last step
-    private List<Double> accelMagnitude;
-
-    // PDR calculation class
+    // PDR and path
     private PdrProcessing pdrProcessing;
-
-    // Trajectory displaying class
     private PathView pathView;
-    // WiFi positioning object
-    private WiFiPositioning wiFiPositioning;
-    private double[] startRef;
-    private double refLat, refLon, refAlt;
-    private double[] ecefRefCoords;
+
+    // Sensor registration latency setting
+    long maxReportLatencyNs = 0;
+
+    // Floorplan API cache (latest result from start-location step)
+    private final Map<String, FloorplanApiClient.BuildingInfo> floorplanBuildingCache =
+            new HashMap<>();
+
+    // Fork positioning fusion state. The EKF/PF operate in a local ENU frame whose origin is
+    // the first valid GNSS/Wi-Fi position (or the selected start point when supplied).
     private EKF extendedKalmanFilter;
-
-    private LatLng pendingWifiPosition = null;
-    private long wifiPositionTimestamp = 0;
-    private long wifiReceivedTime = 0;
-    private int wifiFloor = 0;
-    private float gnssAccuracy = 100f;
-
     private ParticleFilter particleFilter;
-    private static final double PF_EKF_THRESHOLD = 10.0;
-
-    private double previousOrientation = 0.0;
-
-    private double[] lastWifiENU = null;
-    private long lastWifiUpdateTime = 0;
-
-    private final int WIFI_POS_SMOOTH_WINDOW = 5;
-    private final List<LatLng> wifiPosWindow = new ArrayList<>();
-    // Median filter window
-    private final int FUSED_POS_MEDIAN_WINDOW_SIZE = 5;
-    private final List<LatLng> fusedPosWindow = new ArrayList<>();
-
-    // Exponential smoothing state
-    private LatLng fusedPosSmoothed = null;
-    private final double FUSED_SMOOTH_ALPHA = 0.7;
-
-
-    private com.openpositioning.PositionMe.presentation.fragment.TrajectoryMapFragment trajectoryMapFragment;
+    private double refLat, refLon, refAlt;
+    private boolean fusionInitialized;
+    private double previousHeading;
+    private long lastFusionMeasurementMs;
+    private float gnssAccuracy = Float.MAX_VALUE;
+    private volatile List<Wifi> latestWifiList = new ArrayList<>();
+    private volatile com.openpositioning.PositionMe.presentation.fragment.TrajectoryMapFragment trajectoryMapFragment;
+    private volatile Consumer<Integer> wifiFloorChangedListener;
+    //endregion
 
     //region Initialisation
+
     /**
-     * Private constructor for implementing singleton design pattern for SensorFusion.
-     * Initialises empty arrays and new objects that do not depends on outside information.
+     * Private constructor for implementing singleton design pattern.
      */
     private SensorFusion() {
-        // Location listener to be used by the GNSS class
-        this.locationListener= new myLocationListener();
-        // Timer to store sensor values in the trajectory object
-        this.storeTrajectoryTimer = new Timer();
-        // Counters to track elements with slower frequency
-        this.counter = 0;
-        this.secondCounter = 0;
-        // Step count initial value
-        this.stepCounter = 0;
-        // PDR elevation initial values
-        this.elevation = 0;
-        this.elevator = false;
-        // PDR position array
-        this.startLocation = new float[2];
-        // Empty array initialisation
-        this.acceleration = new float[3];
-        this.filteredAcc = new float[3];
-        this.gravity = new float[3];
-        this.magneticField = new float[3];
-        this.angularVelocity = new float[3];
-        this.orientation = new float[3];
-        this.rotation = new float[4];
-        this.rotation[3] = 1.0f;
-        this.R = new float[9];
-
-        // WIFI initial values
-        this.wifiPos = null;
-
-
-        // GNSS initial Long-Lat array
-        this.startLocation = new float[2];
+        this.locationListener = new MyLocationListener();
     }
-
 
     /**
      * Static function to access singleton instance of SensorFusion.
      *
-     * @return  singleton instance of SensorFusion class.
+     * @return singleton instance of SensorFusion class.
      */
     public static SensorFusion getInstance() {
         return sensorFusion;
@@ -256,21 +138,22 @@ public class SensorFusion implements SensorEventListener, Observer {
     /**
      * Initialisation function for the SensorFusion instance.
      *
-     * Initialise all Movement sensor instances from context and predetermined types. Creates a
-     * server communication instance for sending trajectories. Saves current absolute and relative
-     * time, and initialises saving the recording to false.
+     * <p>Initialises all movement sensor instances, creates internal modules, and prepares
+     * the system for data collection.</p>
      *
-     * @param context   application context for permissions and device access.
+     * @param context application context for permissions and device access.
      *
      * @see MovementSensor handling all SensorManager based data collection devices.
      * @see ServerCommunications handling communication with the server.
      * @see GNSSDataProcessor for location data processing.
      * @see WifiDataProcessor for network data processing.
      */
-    public void setContext(Context context) {
-        this.appContext = context.getApplicationContext(); // store app context for later use
+    public synchronized void setContext(Context context) {
+        // Activity recreation must not replace an active recorder or its sensor observers.
+        if (contextInitialized) return;
+        this.appContext = context.getApplicationContext();
 
-        // Initialise data collection devices (unchanged)...
+        // Initialise movement sensors
         this.accelerometerSensor = new MovementSensor(context, Sensor.TYPE_ACCELEROMETER);
         this.barometerSensor = new MovementSensor(context, Sensor.TYPE_PRESSURE);
         this.gyroscopeSensor = new MovementSensor(context, Sensor.TYPE_GYROSCOPE);
@@ -281,635 +164,383 @@ public class SensorFusion implements SensorEventListener, Observer {
         this.rotationSensor = new MovementSensor(context, Sensor.TYPE_ROTATION_VECTOR);
         this.gravitySensor = new MovementSensor(context, Sensor.TYPE_GRAVITY);
         this.linearAccelerationSensor = new MovementSensor(context, Sensor.TYPE_LINEAR_ACCELERATION);
-        // Listener based devices
-        this.wifiProcessor = new WifiDataProcessor(context);
-        wifiProcessor.registerObserver(this);
+
+        // Initialise non-sensor data sources
         this.gnssProcessor = new GNSSDataProcessor(context, locationListener);
-        // Attempt to get the latest GNSS coordinates and update the ECEF reference coordinates
-        float[] latestLatLon = getGNSSLatitude(true);
-        if (latestLatLon[0] != 0.0 || latestLatLon[1] != 0.0) {
-            this.refLat = latestLatLon[0];
-            this.refLon = latestLatLon[1];
-            this.refAlt = 0.0;
-            // ecefRefCoords = CoordinateTransform.geodeticToEcef(latestLatLon[0], latestLatLon[1], 0.0);
-            Log.d("SensorFusion", "Set reference location: refLat=" + refLat + ", refLon=" + refLon + ", refAlt=" + refAlt);
-        }
-        // Create object handling HTTPS communication
-        this.serverCommunications = new ServerCommunications(context);
-        // Save absolute and relative start time
-        this.absoluteStartTime = System.currentTimeMillis();
-        this.bootTime = SystemClock.uptimeMillis();
-        // Initialise saveRecording to false
-        this.saveRecording = false;
+        ServerCommunications serverCommunications = new ServerCommunications(context);
 
-        // Other initialisations...
-        this.accelMagnitude = new ArrayList<>();
+        // Initialise utilities
+        SharedPreferences settings = PreferenceManager.getDefaultSharedPreferences(context);
         this.pdrProcessing = new PdrProcessing(context);
-        this.settings = PreferenceManager.getDefaultSharedPreferences(context);
         this.pathView = new PathView(context, null);
-        this.wiFiPositioning = new WiFiPositioning(context);
-        if (startRef == null) {
-            Log.w("SensorFusion", "startRef is uninitialized, setting default ECEF reference.");
-            startRef = new double[]{0.0, 0.0, 0.0}; // 默认 ECEF 参考坐标
+        WiFiPositioning wiFiPositioning = new WiFiPositioning(context);
+        this.wiFiPositioning = wiFiPositioning;
+
+        // Create internal modules
+        this.recorder = new TrajectoryRecorder(appContext, state, serverCommunications, settings);
+        this.recorder.setSensorReferences(
+                accelerometerSensor, gyroscopeSensor, magnetometerSensor,
+                barometerSensor, lightSensor, proximitySensor, rotationSensor);
+
+        this.wifiPositionManager = new WifiPositionManager(wiFiPositioning, recorder);
+        this.wifiPositionManager.setPositionListener(this::onWifiPosition);
+
+        long bootTime = SystemClock.uptimeMillis();
+        this.eventHandler = new SensorEventHandler(
+                state, pdrProcessing, pathView, recorder, bootTime);
+        this.eventHandler.setStepListener(this::onPdrStep);
+
+        // Register WiFi observer on WifiPositionManager (not on SensorFusion)
+        this.wifiProcessor = new WifiDataProcessor(context);
+        wifiProcessor.registerObserver(wifiPositionManager);
+        wifiProcessor.registerObserver(wifiObserver -> {
+            List<Wifi> copy = new ArrayList<>();
+            for (Object item : wifiObserver) if (item instanceof Wifi) copy.add((Wifi) item);
+            latestWifiList = copy;
+        });
+
+        // Initialise BLE scanner and register observer for trajectory recording
+        this.bleProcessor = new BleDataProcessor(context);
+        bleProcessor.registerObserver(new Observer() {
+            @Override
+            public void update(Object[] objList) {
+                List<BleDevice> bleList = Stream.of(objList)
+                        .map(o -> (BleDevice) o).collect(Collectors.toList());
+                recorder.addBleFingerprint(bleList);
+            }
+        });
+
+        // Initialise WiFi RTT manager and register as WiFi scan observer
+        this.rttManager = new RttManager(appContext, recorder, wifiProcessor);
+        wifiProcessor.registerObserver(rttManager);
+
+        // Initialise BLE RTT estimator and register on BLE scan updates
+        this.bleRttManager = new BleRttManager(recorder);
+        bleProcessor.registerObserver(bleRttManager);
+
+        if (!rttManager.isRttSupported()) {
+            new Handler(Looper.getMainLooper()).post(() ->
+                    Toast.makeText(appContext,
+                            "WiFi RTT is not supported on this device",
+                            Toast.LENGTH_LONG).show());
         }
-
-        if(settings.getBoolean("overwrite_constants", false)) {
-            this.filter_coefficient = Float.parseFloat(settings.getString("accel_filter", "0.96"));
-        } else {
-            this.filter_coefficient = FILTER_COEFFICIENT;
-        }
-
-
-        // Keep app awake during the recording (using stored appContext)
-        PowerManager powerManager = (PowerManager) this.appContext.getSystemService(Context.POWER_SERVICE);
-        wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MyApp::MyWakelockTag");
+        contextInitialized = true;
     }
 
     //endregion
 
-    //region Sensor processing
+    //region SensorEventListener
+
     /**
      * {@inheritDoc}
      *
-     * Called every time a Sensor value is updated.
-     *
-     * Checks originating sensor type, if the data is meaningful save it to a local variable.
-     *
-     * @param sensorEvent   SensorEvent of sensor with values changed, includes types and values.
+     * <p>Delegates to {@link SensorEventHandler#handleSensorEvent(SensorEvent)}.</p>
      */
     @Override
     public void onSensorChanged(SensorEvent sensorEvent) {
-        long currentTime = System.currentTimeMillis();  // Current time in milliseconds
-        int sensorType = sensorEvent.sensor.getType();
-
-        // Get the previous timestamp for this sensor type
-        Long lastTimestamp = lastEventTimestamps.get(sensorType);
-
-        if (lastTimestamp != null) {
-            long timeGap = currentTime - lastTimestamp;
-
-//            // Log a warning if the time gap is larger than the threshold
-//            if (timeGap > LARGE_GAP_THRESHOLD_MS) {
-//                Log.e("SensorFusion", "Large time gap detected for sensor " + sensorType +
-//                        " | Time gap: " + timeGap + " ms");
-//            }
-        }
-
-        // Update timestamp and frequency counter for this sensor
-        lastEventTimestamps.put(sensorType, currentTime);
-        eventCounts.put(sensorType, eventCounts.getOrDefault(sensorType, 0) + 1);
-
-
-
-        switch (sensorType) {
-            case Sensor.TYPE_ACCELEROMETER:
-                acceleration[0] = sensorEvent.values[0];
-                acceleration[1] = sensorEvent.values[1];
-                acceleration[2] = sensorEvent.values[2];
-                break;
-
-            case Sensor.TYPE_PRESSURE:
-                pressure = (1 - ALPHA) * pressure + ALPHA * sensorEvent.values[0];
-                if (saveRecording) {
-                    this.elevation = pdrProcessing.updateElevation(
-                            SensorManager.getAltitude(SensorManager.PRESSURE_STANDARD_ATMOSPHERE, pressure)
-                    );
-                }
-                break;
-
-            case Sensor.TYPE_GYROSCOPE:
-                angularVelocity[0] = sensorEvent.values[0];
-                angularVelocity[1] = sensorEvent.values[1];
-                angularVelocity[2] = sensorEvent.values[2];
-                break;
-
-            case Sensor.TYPE_LINEAR_ACCELERATION:
-                filteredAcc[0] = sensorEvent.values[0];
-                filteredAcc[1] = sensorEvent.values[1];
-                filteredAcc[2] = sensorEvent.values[2];
-
-                // Compute magnitude & add to accelMagnitude
-                double accelMagFiltered = Math.sqrt(
-                        Math.pow(filteredAcc[0], 2) +
-                                Math.pow(filteredAcc[1], 2) +
-                                Math.pow(filteredAcc[2], 2)
-                );
-                this.accelMagnitude.add(accelMagFiltered);
-
-//                // Debug logging
-//                Log.v("SensorFusion",
-//                        "Added new linear accel magnitude: " + accelMagFiltered
-//                                + "; accelMagnitude size = " + accelMagnitude.size());
-
-                elevator = pdrProcessing.estimateElevator(gravity, filteredAcc);
-                break;
-
-            case Sensor.TYPE_GRAVITY:
-                gravity[0] = sensorEvent.values[0];
-                gravity[1] = sensorEvent.values[1];
-                gravity[2] = sensorEvent.values[2];
-
-                // Possibly log gravity values if needed
-                //Log.v("SensorFusion", "Gravity: " + Arrays.toString(gravity));
-
-                elevator = pdrProcessing.estimateElevator(gravity, filteredAcc);
-                break;
-
-            case Sensor.TYPE_LIGHT:
-                light = sensorEvent.values[0];
-                break;
-
-            case Sensor.TYPE_PROXIMITY:
-                proximity = sensorEvent.values[0];
-                break;
-
-            case Sensor.TYPE_MAGNETIC_FIELD:
-                magneticField[0] = sensorEvent.values[0];
-                magneticField[1] = sensorEvent.values[1];
-                magneticField[2] = sensorEvent.values[2];
-                break;
-
-            case Sensor.TYPE_ROTATION_VECTOR:
-                this.rotation = sensorEvent.values.clone();
-                float[] rotationVectorDCM = new float[9];
-                SensorManager.getRotationMatrixFromVector(rotationVectorDCM, this.rotation);
-                SensorManager.getOrientation(rotationVectorDCM, this.orientation);
-                break;
-
-            case Sensor.TYPE_STEP_DETECTOR:
-                long stepTime = SystemClock.uptimeMillis() - bootTime;
-                if (currentTime - lastStepTime < 20) {
-                    Log.e("SensorFusion", "Ignoring step event, too soon after last step event:" + (currentTime - lastStepTime) + " ms");
-                    break;
-                } else {
-                    lastStepTime = currentTime;
-                    if (accelMagnitude.isEmpty()) {
-                        Log.e("SensorFusion", "stepDetection triggered, but accelMagnitude is empty! This can cause updatePdr(...) to fail or return bad results.");
-                    } else {
-                        Log.d("SensorFusion", "stepDetection triggered, accelMagnitude size = " + accelMagnitude.size());
-                    }
-                    float[] newCords = this.pdrProcessing.updatePdr(stepTime, this.accelMagnitude, this.orientation[0]);
-                    this.accelMagnitude.clear();
-                    float stepLen = this.pdrProcessing.getStepLength(); // 获取当前步长
-
-                    double theta = wrapToPi(this.orientation[0]); // 获取当前方向角
-                    Log.d("SensorFusion", "Step detected: stepLen=" + stepLen + ", theta=" + theta);
-
-
-
-                if (saveRecording) {
-                    if (trajectoryMapFragment != null && newCords != null) {
-                        LatLng rawPdrLatLng = CoordinateTransform.enuToGeodetic(
-                                newCords[0], newCords[1], 0.0,
-                                refLat, refLon, refAlt
-                        );
-                        float headingDeg = (float) Math.toDegrees(this.orientation[0]);
-                        trajectoryMapFragment.updateUserLocation(rawPdrLatLng, headingDeg);
-                    }
-                    double currentOrientation = wrapToPi(this.orientation[0]);
-                    double deltaHeading = wrapToPi(currentOrientation - previousOrientation);
-                    previousOrientation = currentOrientation;
-                    Log.d("SensorFusion", "Step detected: stepLen=" + stepLen + ", deltaHeading=" + deltaHeading);
-
-                    if (extendedKalmanFilter != null) {
-                        extendedKalmanFilter.predict(stepLen, deltaHeading);
-                        // --- PF-assisted EKF logic (enabled only in indoor scenes) ---
-                        if (particleFilter != null) {
-                            particleFilter.predict(stepLen, deltaHeading);
-//                            if (pendingWifiPosition != null &&
-//                                    SystemClock.uptimeMillis() - wifiPositionTimestamp < 2000) {
-//                                double[] wifiENU = CoordinateTransform.geodeticToEnu(
-//                                        pendingWifiPosition.latitude,
-//                                        pendingWifiPosition.longitude,
-//                                        0.0,
-//                                        refLat, refLon, refAlt
-//                                );
-//                                particleFilter.updateWiFi(wifiENU[0], wifiENU[1]);
-//                            }
-                            if (stepCounter % 5 == 0) {
-                                particleFilter.resample();
-                            }
-
-                            LatLng pfEstimate = particleFilter.getEstimateLatLng();
-                            LatLng ekfEstimate = extendedKalmanFilter.getEstimatedPosition(refLat, refLon, refAlt);
-
-                            double diff = computeDistance(ekfEstimate, pfEstimate);
-                            double pfEntropy = particleFilter.computeEntropy();
-                            if (diff > PF_EKF_THRESHOLD && pfEntropy < 5.0) {
-                                double[] enuReset = CoordinateTransform.geodeticToEnu(
-                                        pfEstimate.latitude, pfEstimate.longitude, 0.0,
-                                        refLat, refLon, refAlt
-                                );
-                                extendedKalmanFilter.resetPosition(enuReset[0], enuReset[1]);
-                                Log.d("SensorFusion", "EKF reset with PF due to drift > " + diff + " m");
-                            }
-                        }else {
-                            Log.e("SensorFusion", "ParticleFilter is not initialized!");
-                        }
-
-                    } else {
-                        Log.e("SensorFusion", "EKF is not initialized!");
-                    }
-
-                    // get newest Gnss position
-
-                    float[] gnss = sensorFusion.getSensorValueMap().get(SensorTypes.GNSSLATLONG);
-                    Location gnssLocation = new Location(LocationManager.GPS_PROVIDER);
-                    gnssLocation.setLatitude(gnss[0]);
-                    gnssLocation.setLongitude(gnss[1]);
-                    Location tempgnssLocation = gnssProcessor.getLastKnownLocation();
-                    gnssLocation.setAccuracy(tempgnssLocation.getAccuracy());
-                    if (gnssLocation != null) {
-                        Log.d("SensorFusion", "GNSS Location available for update: Lat=" + gnssLocation.getLatitude() +
-                                ", Lon=" + gnssLocation.getLongitude() + ", Accuracy=" + gnssLocation.getAccuracy());
-                        gnssAccuracy = gnssLocation.getAccuracy();
-                    } else {
-                        Log.d("SensorFusion", "GNSS Location is null, skipping GNSS correction.");
-                    }
-                    // Get the current WiFi fingerprint data
-                    List<Wifi> currentWifiList = getWifiList();  // 最新扫描结果
-                    double avgRssi = Double.NaN;
-                    if (currentWifiList != null && !currentWifiList.isEmpty()) {
-                        avgRssi = currentWifiList.stream().mapToInt(Wifi::getLevel).average().orElse(Double.NaN);
-                        Log.d("SensorFusion", "StepDetected - Avg WiFi RSSI: " + avgRssi);
-                    } else {
-                        Log.w("SensorFusion", "WiFi list is empty, skipping WiFi RSSI calculation.");
-                    }
-
-                    JSONObject wifiResponse = null;
-                    if (pendingWifiPosition != null &&
-                            SystemClock.uptimeMillis() - wifiPositionTimestamp < 2000) {
-                        wifiResponse = new JSONObject();
-                        try {
-                            wifiResponse.put("lat", pendingWifiPosition.latitude);
-                            wifiResponse.put("lon", pendingWifiPosition.longitude);
-                            wifiResponse.put("floor", wifiFloor);
-                        } catch (JSONException e) {
-                            e.printStackTrace();
-                        }
-
-
-                    }
-                    pendingWifiPosition = null;
-                    updateFusion(wifiResponse, gnssLocation, avgRssi);
-
-
-                    // Call EKF's updateGNSS to ensure GNSS data is used for correction
-                    if (gnssLocation != null && extendedKalmanFilter != null) {
-                        double lat = gnssLocation.getLatitude();
-                        double lon = gnssLocation.getLongitude();
-                        double alt = gnssLocation.getAltitude();
-                        double[] enuCoords = CoordinateTransform.geodeticToEnu(lat, lon, alt, refLat, refLon, refAlt);
-                       // extendedKalmanFilter.updateGNSS(enuCoords[0], enuCoords[1], enuCoords[2], 1.0);
-                    }
-                    // Get the corrected positioning result from the fusion algorithm
-                    if (extendedKalmanFilter != null) {
-                        LatLng rawFusedPos = extendedKalmanFilter.getEstimatedPosition(refLat, refLon, refAlt);
-                        LatLng smoothFusedPos = applyDoubleSmoothedFusedPos(rawFusedPos);
-
-                        trajectory.addPdrData(Traj.Pdr_Sample.newBuilder()
-                                .setRelativeTimestamp(SystemClock.uptimeMillis() - bootTime)
-                                .setX((float) smoothFusedPos.latitude)
-                                .setY((float) smoothFusedPos.longitude));
-
-                        if (trajectoryMapFragment != null) {
-                            float headingDeg = (float) Math.toDegrees(this.orientation[0]);
-                            trajectoryMapFragment.updateFusionLocation(smoothFusedPos, headingDeg);
-                        }
-
-
-                    } else {
-                        Log.e("SensorFusion", "EKF is null when trying to get estimated position!");
-                    }
-                    stepCounter++;
-                }
-                break;
-                }
-
+        if (eventHandler != null && sensorEvent != null) {
+            eventHandler.handleSensorEvent(sensorEvent);
         }
     }
 
-
-
-
-    public void updateFusion(JSONObject wifiResponse, Location gnssLocation, double avgRssi) {
-        try {
-            long currentTime = SystemClock.uptimeMillis();
-            double gnssAccuracy = gnssLocation != null ? gnssLocation.getAccuracy() : Double.MAX_VALUE;
-            boolean useWiFi = wifiResponse != null && wifiResponse.has("lat") && wifiResponse.has("lon");
-            boolean useGNSS = (!useWiFi && gnssLocation != null && gnssAccuracy < 20.0 && currentTime - lastGnssUpdateTime > 3000);
-            if(useGNSS){
-                lastGnssUpdateTime = currentTime;
-            }
-            Log.d("SensorFusion", "updateFusion: gnssAccuracy=" + gnssAccuracy + ", useWiFi=" + useWiFi + ", useGNSS=" + useGNSS + ", avgRssi=" + avgRssi);
-
-            if (useWiFi) {
-                Log.d("SensorFusion", "WiFi response raw: " + wifiResponse.toString());
-                double lat = wifiResponse.getDouble("lat");
-                double lon = wifiResponse.getDouble("lon");
-                double[] enuCoords = CoordinateTransform.geodeticToEnu(lat, lon, getElevation(), refLat, refLon, refAlt);
-
-                // Add a redundant update check: Skip the update if it's within 3 seconds and the Wi-Fi coordinates haven't changed by more than 1 meter
-                long currentWifiTime = SystemClock.uptimeMillis();
-                if (lastWifiENU != null) {
-                    double dx = enuCoords[0] - lastWifiENU[0];
-                    double dy = enuCoords[1] - lastWifiENU[1];
-                    double distance = Math.sqrt(dx * dx + dy * dy);
-                    if ((currentWifiTime - lastWifiUpdateTime < 7000) && (distance < 2.0)) {
-                        Log.d("SensorFusion", "WiFi coordinate redundant: distance = " + distance + " m, skipping update.");
-                        return;  // Skip this update
-                    }
-                }
-
-                lastWifiENU = enuCoords;
-                lastWifiUpdateTime = currentWifiTime;
-
-                Log.d("SensorFusion", "Using WiFi for EKF update: East=" + enuCoords[0] + ", North=" + enuCoords[1]);
-                long fusionTime = System.currentTimeMillis();
-                Log.d("SensorFusion", "WiFiPositioning result usage time: " + fusionTime + "，相对延迟: " + (fusionTime - wifiReceivedTime) + " ms");
-
-                if (extendedKalmanFilter != null) {
-                    double timeSinceLastUpdate = SystemClock.uptimeMillis() - lastOpUpdateTime;
-                    lastOpUpdateTime = SystemClock.uptimeMillis();
-                    double penaltyFactor = calculatePenaltyFactor(avgRssi, timeSinceLastUpdate);
-                    extendedKalmanFilter.update(enuCoords[0], enuCoords[1], penaltyFactor);
-                    Log.d("SensorFusion", "EKF updated with WiFi: penaltyFactor=" + penaltyFactor);
-                }
-            } else if (useGNSS && gnssLocation != null) {
-                double lat = gnssLocation.getLatitude();
-                double lon = gnssLocation.getLongitude();
-                double alt = gnssLocation.getAltitude();
-
-                double[] enuCoords = CoordinateTransform.geodeticToEnu(lat, lon, alt, refLat, refLon, refAlt);
-                Log.d("SensorFusion", "Using GNSS for EKF update: East=" + enuCoords[0] + ", North=" + enuCoords[1] + ", Alt=" + enuCoords[2]);
-                Log.d("SensorFusion", "Raw GNSS: Lat=" + lat + ", Lon=" + lon + ", Alt=" + alt + ", Accuracy=" + gnssLocation.getAccuracy());
-
-                if (extendedKalmanFilter != null) {
-                    extendedKalmanFilter.updateGNSS(enuCoords[0], enuCoords[1], enuCoords[2], 1.0);
-                    Log.d("SensorFusion", "EKF updated with GNSS.");
-                }
-            }
-        } catch (JSONException e) {
-            e.printStackTrace();
-        }
-    }
-
-
-    private double calculatePenaltyFactor(double rssi, double elapsedTime) {
-        double baseFactor;
-
-        // WiFi error self-adaptation
-        if (rssi > -50) {
-            baseFactor = 3; // Reduce noise influence for strong WiFi signals
-        } else if (rssi > -75) {
-            baseFactor = 4; // Normal WiFi signal, no adjustment
-        } else {
-            baseFactor = 5; // Increase noise influence for weak WiFi signals
-        }
-
-        // Dynamic time error adjustment (0.1/second, up to a maximum of 4.0)
-        double timePenalty = 1.0 + Math.min(elapsedTime / 10000.0, 3.0);
-
-        return baseFactor * timePenalty;
-    }
-
-    /**
-     * Utility function to log the event frequency of each sensor.
-     * Call this periodically for debugging purposes.
-     */
-    public void logSensorFrequencies() {
-        for (int sensorType : eventCounts.keySet()) {
-            Log.d("SensorFusion", "Sensor " + sensorType + " | Event Count: " + eventCounts.get(sensorType));
-        }
-    }
-
-    /**
-     * {@inheritDoc}
-     *
-     * Location listener class to receive updates from the location manager.
-     *
-     * Passed to the {@link GNSSDataProcessor} to receive the location data in this class. Save the
-     * values in instance variables.
-     */
-    class myLocationListener implements LocationListener{
-        @Override
-        public void onLocationChanged(Location location) {
-            //Toast.makeText(context, "Location Changed", Toast.LENGTH_SHORT).show();
-            latitude = (float) location.getLatitude();
-            longitude = (float) location.getLongitude();
-            float altitude = (float) location.getAltitude();
-            float accuracy = (float) location.getAccuracy();
-            float speed = (float) location.getSpeed();
-            String provider = location.getProvider();
-            if(saveRecording) {
-                trajectory.addGnssData(Traj.GNSS_Sample.newBuilder()
-                        .setAccuracy(accuracy)
-                        .setAltitude(altitude)
-                        .setLatitude(latitude)
-                        .setLongitude(longitude)
-                        .setSpeed(speed)
-                        .setProvider(provider)
-                        .setRelativeTimestamp(System.currentTimeMillis()-absoluteStartTime));
-            }
-        }
-    }
-
-    /**
-     * {@inheritDoc}
-     *
-     * Receives updates from {@link WifiDataProcessor}.
-     *
-     * @see WifiDataProcessor object for wifi scanning.
-     */
-    @Override
-    public void update(Object[] wifiList) {
-        this.wifiList = Stream.of(wifiList).map(o -> (Wifi) o).collect(Collectors.toList());
-
-        // Calculate avgRssi
-        double avgRssi = -100;
-        if (!this.wifiList.isEmpty()) {
-            avgRssi = this.wifiList.stream().mapToInt(Wifi::getLevel).average().orElse(-100);
-        }
-
-        // Send avgRssi
-        createWifiPositioningRequest(avgRssi);
-
-        // Save newest wifi values to local variable
-        this.wifiList = Stream.of(wifiList).map(o -> (Wifi) o).collect(Collectors.toList());
-
-        if(this.saveRecording) {
-            Traj.WiFi_Sample.Builder wifiData = Traj.WiFi_Sample.newBuilder()
-                    .setRelativeTimestamp(SystemClock.uptimeMillis() - bootTime);
-            for (Wifi data : this.wifiList) {
-                wifiData.addMacScans(Traj.Mac_Scan.newBuilder()
-                        .setRelativeTimestamp(SystemClock.uptimeMillis() - bootTime)
-                        .setMac(data.getBssid()).setRssi(data.getLevel()));
-            }
-            // Adding WiFi data to Trajectory
-            this.trajectory.addWifiData(wifiData);
-        }
-    }
-
-
-    /**
-     * Function to create a request to obtain a wifi location for the obtained wifi fingerprint
-     *
-     */
-    private void createWifiPositioningRequest(double avgRssi) {
-        final long requestStartTime = System.currentTimeMillis();
-        try {
-            JSONObject wifiAccessPoints = new JSONObject();
-            for (Wifi data : this.wifiList){
-                wifiAccessPoints.put(String.valueOf(data.getBssid()), data.getLevel());
-            }
-
-            JSONObject wifiFingerPrint = new JSONObject();
-            wifiFingerPrint.put(WIFI_FINGERPRINT, wifiAccessPoints);
-
-            Log.d("SensorFusion", "Sending WiFi fingerprint: " + wifiFingerPrint.toString());
-
-            this.wiFiPositioning.request(wifiFingerPrint, new WiFiPositioning.VolleyCallback() {
-                @Override
-                public void onSuccess(LatLng wifiLocation, int floor) {
-                    Log.d("SensorFusion", "Received WiFi location: lat=" + wifiLocation.latitude + ", lon=" + wifiLocation.longitude + ", floor=" + floor);
-                    LatLng smoothedLocation = getSmoothedWifiPosition(wifiLocation);
-                    Log.d("SensorFusion", "Smoothed WiFi location: lat=" + smoothedLocation.latitude + ", lon=" + smoothedLocation.longitude);
-
-                    pendingWifiPosition = wifiLocation;
-                    wifiFloor = floor;
-                    wifiPositionTimestamp = SystemClock.uptimeMillis();
-                    wifiReceivedTime = System.currentTimeMillis();  // For log analysis
-                    if (trajectoryMapFragment != null && wifiLocation != null) {
-                        trajectoryMapFragment.updateWifiLocation(wifiLocation, 0f);  // 0f as placeholder heading
-                    }
-                    Log.d("SensorFusion", "WiFi store success, store time: " + wifiReceivedTime);
-                    long responseTime = System.currentTimeMillis();
-                    long delay = responseTime - requestStartTime;
-                    Log.d("SensorFusion", "WiFi total request latency: " + delay + "ms");
-                    if (wifiFloorChangedListener != null) {
-                        wifiFloorChangedListener.accept(floor);
-                    }
-
-                }
-
-                @Override
-                public void onError(String message) {
-                    Log.e("SensorFusion", "WiFi positioning error: " + message);
-                }
-            });
-
-        } catch (JSONException e) {
-            Log.e("SensorFusion", "JSON error while creating WiFi fingerprint", e);
-        }
-    }
-
-    private LatLng applyDoubleSmoothedFusedPos(LatLng rawFusedPos) {
-        // Step 1: Median filtering (anti-jitter)
-        fusedPosWindow.add(rawFusedPos);
-        if (fusedPosWindow.size() > FUSED_POS_MEDIAN_WINDOW_SIZE) {
-            fusedPosWindow.remove(0);
-        }
-
-        List<Double> latList = fusedPosWindow.stream().map(p -> p.latitude).sorted().collect(Collectors.toList());
-        List<Double> lonList = fusedPosWindow.stream().map(p -> p.longitude).sorted().collect(Collectors.toList());
-        double medianLat = latList.get(latList.size() / 2);
-        double medianLon = lonList.get(lonList.size() / 2);
-        LatLng medianFusedPos = new LatLng(medianLat, medianLon);
-
-        // Step 2: Exponential smoothing (smooth following)
-        if (fusedPosSmoothed == null) {
-            fusedPosSmoothed = medianFusedPos;
-        } else {
-            double lat = FUSED_SMOOTH_ALPHA * medianFusedPos.latitude + (1 - FUSED_SMOOTH_ALPHA) * fusedPosSmoothed.latitude;
-            double lon = FUSED_SMOOTH_ALPHA * medianFusedPos.longitude + (1 - FUSED_SMOOTH_ALPHA) * fusedPosSmoothed.longitude;
-            fusedPosSmoothed = new LatLng(lat, lon);
-        }
-
-        return fusedPosSmoothed;
-    }
-
-//    private LatLng getSmoothedFusedPosition(LatLng newFusedPos) {
-//        fusedPosWindow.add(newFusedPos);
-//        if (fusedPosWindow.size() > FUSED_POS_WINDOW_SIZE) {
-//            fusedPosWindow.remove(0);
-//        }
-//
-//        List<Double> latList = fusedPosWindow.stream().map(p -> p.latitude).sorted().collect(Collectors.toList());
-//        List<Double> lonList = fusedPosWindow.stream().map(p -> p.longitude).sorted().collect(Collectors.toList());
-//
-//        double medianLat = latList.get(latList.size() / 2);
-//        double medianLon = lonList.get(lonList.size() / 2);
-//        return new LatLng(medianLat, medianLon);
-//    }
-
-
-    // Callback Example Function
-    /**
-     * Function to create a request to obtain a wifi location for the obtained wifi fingerprint
-     * using Volley Callback
-     */
-    private void createWifiPositionRequestCallback(){
-        try {
-            // Creating a JSON object to store the WiFi access points
-            JSONObject wifiAccessPoints=new JSONObject();
-            for (Wifi data : this.wifiList){
-                wifiAccessPoints.put(String.valueOf(data.getBssid()), data.getLevel());
-            }
-            // Creating POST Request
-            JSONObject wifiFingerPrint = new JSONObject();
-            wifiFingerPrint.put(WIFI_FINGERPRINT, wifiAccessPoints);
-            this.wiFiPositioning.request(wifiFingerPrint, new WiFiPositioning.VolleyCallback() {
-                @Override
-                public void onSuccess(LatLng wifiLocation, int floor) {
-                    // Handle the success response
-                }
-
-                @Override
-                public void onError(String message) {
-                    // Handle the error response
-                }
-            });
-        } catch (JSONException e) {
-            // Catching error while making JSON object, to prevent crashes
-            // Error log to keep record of errors (for secure programming and maintainability)
-            Log.e("jsonErrors","Error creating json object"+e.toString());
-        }
-
-    }
-
-    /**
-     * Method to get user position obtained using {@link WiFiPositioning}.
-     *
-     * @return {@link LatLng} corresponding to user's position.
-     */
-    public LatLng getLatLngWifiPositioning(){return this.wiFiPositioning.getWifiLocation();}
-
-    /**
-     * Method to get current floor the user is at, obtained using WiFiPositioning
-     * @see WiFiPositioning for WiFi positioning
-     * @return Current floor user is at using WiFiPositioning
-     */
-    public int getWifiFloor(){
-        return this.wiFiPositioning.getFloor();
-    }
-
-
-    /**
-     * {@inheritDoc}
-     */
+    /** {@inheritDoc} */
     @Override
     public void onAccuracyChanged(Sensor sensor, int i) {}
-    public float getGnssAccuracy() {
-        return gnssAccuracy;
+
+    //endregion
+
+    //region Start/Stop listening
+
+    /**
+     * Registers all device listeners and enables updates with the specified sampling rate.
+     *
+     * <p>Should be called from {@link MainActivity} when resuming the application.</p>
+     */
+    public void resumeListening() {
+        if (eventHandler == null || recorder == null) {
+            Log.w("SensorFusion", "Ignoring resumeListening before sensor context initialization");
+            return;
+        }
+        registerSensor(accelerometerSensor, 10000, (int) maxReportLatencyNs);
+        registerSensor(linearAccelerationSensor, 10000, (int) maxReportLatencyNs);
+        registerSensor(gravitySensor, 10000, (int) maxReportLatencyNs);
+        registerSensor(barometerSensor, (int) 1e6, 0);
+        registerSensor(gyroscopeSensor, 10000, (int) maxReportLatencyNs);
+        registerSensor(lightSensor, (int) 1e6, 0);
+        registerSensor(proximitySensor, (int) 1e6, 0);
+        registerSensor(magnetometerSensor, 10000, (int) maxReportLatencyNs);
+        registerSensor(stepDetectionSensor, SensorManager.SENSOR_DELAY_NORMAL, 0);
+        registerSensor(rotationSensor, (int) 1e6, 0);
+        // Foreground service owns WiFi/BLE scanning during recording.
+        if (!recorder.isRecording()) {
+            startWirelessCollectors();
+        }
+        if (gnssProcessor != null) gnssProcessor.startLocationUpdates();
     }
-    private double wrapToPi(double angle) {
-        while(angle > Math.PI) angle -= 2*Math.PI;
-        while(angle < -Math.PI) angle += 2*Math.PI;
-        return angle;
+
+    private void registerSensor(MovementSensor movementSensor, int samplingPeriodUs,
+                                int maxReportLatencyUs) {
+        if (movementSensor == null || movementSensor.sensorManager == null
+                || movementSensor.sensor == null) {
+            return; // Hardware capability is optional; missing sensors produce no readings.
+        }
+        movementSensor.sensorManager.registerListener(this, movementSensor.sensor,
+                samplingPeriodUs, maxReportLatencyUs);
     }
+
+    /**
+     * Un-registers all device listeners and pauses data collection.
+     *
+     * <p>Should be called from {@link MainActivity} when pausing the application.</p>
+     */
+    public void stopListening() {
+        if (recorder != null && recorder.isRecording()) return;
+        unregisterSensor(accelerometerSensor);
+        unregisterSensor(barometerSensor);
+        unregisterSensor(gyroscopeSensor);
+        unregisterSensor(lightSensor);
+        unregisterSensor(proximitySensor);
+        unregisterSensor(magnetometerSensor);
+        unregisterSensor(stepDetectionSensor);
+        unregisterSensor(rotationSensor);
+        unregisterSensor(linearAccelerationSensor);
+        unregisterSensor(gravitySensor);
+        stopWirelessCollectors();
+        if (gnssProcessor != null) gnssProcessor.stopUpdating();
+    }
+
+    private void unregisterSensor(MovementSensor movementSensor) {
+        if (movementSensor != null && movementSensor.sensorManager != null) {
+            movementSensor.sensorManager.unregisterListener(this);
+        }
+    }
+
+    /**
+     * Called by {@link SensorCollectionService} when foreground collection starts.
+     * Moves WiFi/BLE scanning responsibility into the service lifecycle while recording.
+     */
+    public void onCollectionServiceStarted() {
+        if (recorder == null || !recorder.isRecording()) {
+            Log.w("SensorFusion", "Ignoring collection service start without an active recording");
+            stopWirelessCollectors();
+            return;
+        }
+        startWirelessCollectors();
+    }
+
+    /**
+     * Called by {@link SensorCollectionService} when foreground collection stops.
+     * Stops WiFi/BLE scans that were started for recording continuity.
+     */
+    public void onCollectionServiceStopped() {
+        stopWirelessCollectors();
+        // Background collection has ended without an active foreground owner. Stop the
+        // in-memory recording so the facade cannot claim the session is still collecting.
+        if (recorder != null && recorder.isRecording()) {
+            recorder.stopRecording();
+        }
+    }
+
+    public boolean isRecording() {
+        return recorder != null && recorder.isRecording();
+    }
+
+    private void startWirelessCollectors() {
+        if (wifiProcessor != null) {
+            wifiProcessor.startListening();
+        }
+        if (bleProcessor != null) {
+            bleProcessor.startListening();
+        }
+    }
+
+    private void stopWirelessCollectors() {
+        try {
+            if (wifiProcessor != null) {
+                wifiProcessor.stopListening();
+            }
+        } catch (Exception e) {
+            System.err.println("WiFi stop failed");
+        }
+        try {
+            if (bleProcessor != null) {
+                bleProcessor.stopListening();
+            }
+        } catch (Exception e) {
+            System.err.println("BLE stop failed");
+        }
+    }
+
+    //endregion
+
+    //region Recording lifecycle (delegated to TrajectoryRecorder)
+
+    /**
+     * Enables saving sensor values to the trajectory object.
+     * Also starts the foreground service to keep data collection alive in the background.
+     *
+     * @see TrajectoryRecorder#startRecording(PdrProcessing)
+     * @see SensorCollectionService
+     */
+    public void startRecording() {
+        if (recorder == null || eventHandler == null || pdrProcessing == null || appContext == null) {
+            Log.e("SensorFusion", "Cannot start recording before sensor context initialization");
+            showRecordingFailure();
+            return;
+        }
+        if (!recorder.startRecording(pdrProcessing)) {
+            showRecordingFailure();
+            return;
+        }
+
+        eventHandler.resetBootTime(recorder.getBootTime());
+        stopWirelessCollectors();
+        try {
+            SensorCollectionService.start(appContext);
+        } catch (RuntimeException exception) {
+            Log.e("SensorFusion", "Unable to start foreground collection service", exception);
+            recorder.stopRecording();
+            stopWirelessCollectors();
+            showRecordingFailure();
+        }
+    }
+
+    private void showRecordingFailure() {
+        if (appContext != null) {
+            new Handler(Looper.getMainLooper()).post(() ->
+                    Toast.makeText(appContext,
+                            "Recording could not start. Please retry while the app is open.",
+                            Toast.LENGTH_LONG).show());
+        }
+    }
+
+    /**
+     * Disables saving sensor values to the trajectory object.
+     * Also stops the foreground service since background collection is no longer needed.
+     *
+     * @see TrajectoryRecorder#stopRecording()
+     * @see SensorCollectionService
+     */
+    public void stopRecording() {
+        if (recorder != null) recorder.stopRecording();
+        if (appContext != null) SensorCollectionService.stop(appContext);
+        stopWirelessCollectors();
+    }
+
+    /**
+     * Validates the current trajectory against quality thresholds before upload.
+     *
+     * @return validation result with errors and warnings
+     * @see TrajectoryValidator
+     */
+    public TrajectoryValidator.ValidationResult validateTrajectory() {
+        return recorder.validateTrajectory();
+    }
+
+    /**
+     * Send the trajectory object to servers.
+     *
+     * @see TrajectoryRecorder#sendTrajectoryToCloud()
+     */
+    public void sendTrajectoryToCloud() {
+        recorder.sendTrajectoryToCloud();
+    }
+
+    /**
+     * Sets the trajectory name/ID for the current recording session.
+     *
+     * @param id trajectory name entered by the user
+     */
+    public void setTrajectoryId(String id) {
+        recorder.setTrajectoryId(id);
+    }
+
+    /**
+     * Gets the trajectory name/ID for the current recording session.
+     *
+     * @return trajectory name string, or null if not set
+     */
+    public String getTrajectoryId() {
+        return recorder.getTrajectoryId();
+    }
+
+    /**
+     * Sets the selected building identifier for the current recording session.
+     * Used to determine the campaign name when uploading the trajectory.
+     *
+     * @param buildingId building name from the floorplan API (e.g. "nucleus_building")
+     */
+    public void setSelectedBuildingId(String buildingId) {
+        recorder.setSelectedBuildingId(buildingId);
+    }
+
+    /**
+     * Gets the selected building identifier for the current recording session.
+     *
+     * @return building name string, or null if no building was selected
+     */
+    public String getSelectedBuildingId() {
+        return recorder.getSelectedBuildingId();
+    }
+
+    /**
+     * Caches floorplan API building payloads for use in later fragments.
+     *
+     * @param buildings buildings returned by floorplan API
+     */
+    public void setFloorplanBuildings(List<FloorplanApiClient.BuildingInfo> buildings) {
+        floorplanBuildingCache.clear();
+        if (buildings == null) return;
+
+        for (FloorplanApiClient.BuildingInfo building : buildings) {
+            if (building == null || building.getName() == null || building.getName().isEmpty()) {
+                continue;
+            }
+            floorplanBuildingCache.put(building.getName(), building);
+        }
+    }
+
+    /**
+     * Returns a cached floorplan entry by building id.
+     *
+     * @param buildingId building name from floorplan API
+     * @return cached building info, or null if not present
+     */
+    public FloorplanApiClient.BuildingInfo getFloorplanBuilding(String buildingId) {
+        if (buildingId == null || buildingId.isEmpty()) {
+            return null;
+        }
+        return floorplanBuildingCache.get(buildingId);
+    }
+
+    /**
+     * Returns all cached floorplan entries.
+     *
+     * @return list copy of cached building info objects
+     */
+    public List<FloorplanApiClient.BuildingInfo> getFloorplanBuildings() {
+        return new ArrayList<>(floorplanBuildingCache.values());
+    }
+
+    /**
+     * Writes the initial position and heading into the trajectory protobuf.
+     * Should be called after startRecording() and setStartGNSSLatitude().
+     */
+    public void writeInitialMetadata() {
+        recorder.writeInitialMetadata();
+    }
+
+    /**
+     * Adds a test point (user ground truth marker) to the trajectory.
+     */
+    public void addTestPointToProto(long pressTimestampMs, double lat, double lng) {
+        recorder.addTestPoint(pressTimestampMs, lat, lng);
+    }
+
     //endregion
 
     //region Getters/Setters
+
     /**
      * Getter function for core location data.
      *
@@ -917,13 +548,12 @@ public class SensorFusion implements SensorEventListener, Observer {
      * @return longitude and latitude data in a float[2].
      */
     public float[] getGNSSLatitude(boolean start) {
-        float [] latLong = new float[2];
-        if(!start) {
-            latLong[0] = latitude;
-            latLong[1] = longitude;
-        }
-        else{
-            latLong = startLocation;
+        float[] latLong = new float[2];
+        if (!start) {
+            latLong[0] = state.latitude;
+            latLong[1] = state.longitude;
+        } else {
+            latLong = state.startLocation;
         }
         return latLong;
     }
@@ -933,62 +563,52 @@ public class SensorFusion implements SensorEventListener, Observer {
      *
      * @param startPosition contains the initial location set by the user
      */
-    public void setStartGNSSLatitude(float[] startPosition){
-        startLocation = startPosition;
+    public void setStartGNSSLatitude(float[] startPosition) {
+        state.startLocation[0] = startPosition[0];
+        state.startLocation[1] = startPosition[1];
     }
-
 
     /**
      * Function to redraw path in corrections fragment.
      *
      * @param scalingRatio new size of path due to updated step length
      */
-    public void redrawPath(float scalingRatio){
+    public void redrawPath(float scalingRatio) {
         pathView.redraw(scalingRatio);
     }
 
     /**
-     * Getter function for average step count.
-     * Calls the average step count function in pdrProcessing class
+     * Getter function for average step length.
      *
-     * @return average step count of total PDR.
+     * @return average step length of total PDR.
      */
-    public float passAverageStepLength(){
+    public float passAverageStepLength() {
         return pdrProcessing.getAverageStepLength();
     }
 
     /**
      * Getter function for device orientation.
-     * Passes the orientation variable
      *
-     * @return orientation of device.
+     * @return orientation of device in radians.
      */
-    public float passOrientation(){
-        return orientation[0];
+    public float passOrientation() {
+        return state.orientation[0];
     }
-
-    public WiFiPositioning getWiFiPositioning() {
-        return this.wiFiPositioning;
-    }
-
 
     /**
      * Return most recent sensor readings.
      *
-     * Collects all most recent readings from movement and location sensors, packages them in a map
-     * that is indexed by {@link SensorTypes} and makes it accessible for other classes.
-     *
-     * @return  Map of <code>SensorTypes</code> to float array of most recent values.
+     * @return Map of {@link SensorTypes} to float array of most recent values.
      */
     public Map<SensorTypes, float[]> getSensorValueMap() {
         Map<SensorTypes, float[]> sensorValueMap = new HashMap<>();
-        sensorValueMap.put(SensorTypes.ACCELEROMETER, acceleration);
-        sensorValueMap.put(SensorTypes.GRAVITY, gravity);
-        sensorValueMap.put(SensorTypes.MAGNETICFIELD, magneticField);
-        sensorValueMap.put(SensorTypes.GYRO, angularVelocity);
-        sensorValueMap.put(SensorTypes.LIGHT, new float[]{light});
-        sensorValueMap.put(SensorTypes.PRESSURE, new float[]{pressure});
-        sensorValueMap.put(SensorTypes.PROXIMITY, new float[]{proximity});
+        sensorValueMap.put(SensorTypes.ACCELEROMETER, state.acceleration);
+        sensorValueMap.put(SensorTypes.GRAVITY, state.gravity);
+        sensorValueMap.put(SensorTypes.MAGNETICFIELD, state.magneticField);
+        sensorValueMap.put(SensorTypes.GYRO, state.angularVelocity);
+        sensorValueMap.put(SensorTypes.LIGHT, new float[]{state.light});
+        sensorValueMap.put(SensorTypes.PRESSURE, new float[]{state.pressure});
+        sensorValueMap.put(SensorTypes.PROXIMITY, new float[]{state.proximity});
         sensorValueMap.put(SensorTypes.GNSSLATLONG, getGNSSLatitude(false));
         sensorValueMap.put(SensorTypes.PDR, pdrProcessing.getPDRMovement());
         return sensorValueMap;
@@ -996,18 +616,17 @@ public class SensorFusion implements SensorEventListener, Observer {
 
     /**
      * Return the most recent list of WiFi names and levels.
-     * Each Wifi object contains a BSSID and a level value.
      *
-     * @return  list of Wifi objects.
+     * @return list of Wifi objects.
      */
     public List<Wifi> getWifiList() {
-        return this.wifiList;
+        return wifiPositionManager.getWifiList();
     }
 
     /**
      * Get information about all the sensors registered in SensorFusion.
      *
-     * @return  List of SensorInfo objects containing name, resolution, power, etc.
+     * @return List of SensorInfo objects containing name, resolution, power, etc.
      */
     public List<SensorInfo> getSensorInfos() {
         List<SensorInfo> sensorInfoList = new ArrayList<>();
@@ -1022,34 +641,30 @@ public class SensorFusion implements SensorEventListener, Observer {
 
     /**
      * Registers the caller observer to receive updates from the server instance.
-     * Necessary when classes want to act on a trajectory being successfully or unsuccessfully send
-     * to the server. This grants access to observing the {@link ServerCommunications} instance
-     * used by the SensorFusion class.
      *
-     * @param observer  Instance implementing {@link Observer} class who wants to be notified of
-     *                  events relating to sending and receiving trajectories.
+     * @param observer Instance implementing {@link Observer} who wants to be notified of
+     *                 events relating to sending and receiving trajectories.
      */
     public void registerForServerUpdate(Observer observer) {
-        serverCommunications.registerObserver(observer);
+        recorder.getServerCommunications().registerObserver(observer);
     }
 
     /**
      * Get the estimated elevation value in meters calculated by the PDR class.
-     * Elevation is relative to the starting position.
      *
-     * @return  float of the estimated elevation in meters.
+     * @return float of the estimated elevation in meters.
      */
     public float getElevation() {
-        return this.elevation;
+        return state.elevation;
     }
 
     /**
-     * Get an estimate by the PDR class whether it estimates the user is currently taking an elevator.
+     * Get an estimate whether the user is currently taking an elevator.
      *
-     * @return  true if the PDR estimates the user is in an elevator, false otherwise.
+     * @return true if the PDR estimates the user is in an elevator, false otherwise.
      */
     public boolean getElevator() {
-        return this.elevator;
+        return state.elevator;
     }
 
     /**
@@ -1057,378 +672,160 @@ public class SensorFusion implements SensorEventListener, Observer {
      *
      * @return int 1 if the phone is by the ear, int 0 otherwise.
      */
-    public int getHoldMode(){
-        int proximityThreshold = 1, lightThreshold = 100; //holdMode: by ear=1, not by ear =0
-        if(proximity<proximityThreshold && light>lightThreshold) { //unit cm
+    public int getHoldMode() {
+        int proximityThreshold = 1, lightThreshold = 100;
+        if (state.proximity < proximityThreshold && state.light > lightThreshold) {
             return 1;
-        }
-        else{
+        } else {
             return 0;
         }
     }
 
+    /**
+     * Returns the user position obtained using WiFi positioning.
+     *
+     * @return {@link LatLng} corresponding to user's position.
+     */
+    public LatLng getLatLngWifiPositioning() {
+        return wifiPositionManager.getLatLngWifiPositioning();
+    }
+
+    /**
+     * Returns the current floor the user is on, obtained using WiFi positioning.
+     *
+     * @return current floor number.
+     */
+    public int getWifiFloor() {
+        return wifiPositionManager.getWifiFloor();
+    }
+
+    /**
+     * Utility function to log the event frequency of each sensor.
+     */
+    public void logSensorFrequencies() {
+        eventHandler.logSensorFrequencies();
+    }
+
     //endregion
 
-    //region Start/Stop
 
-    /**
-     * Registers all device listeners and enables updates with the specified sampling rate.
-     *
-     * Should be called from {@link MainActivity} when resuming the application. Sampling rate is in
-     * microseconds, IMU needs 100Hz, rest 1Hz
-     *
-     * @see MovementSensor handles SensorManager based devices.
-     * @see WifiDataProcessor handles wifi data.
-     * @see GNSSDataProcessor handles location data.
-     */
-    public void resumeListening() {
-        accelerometerSensor.sensorManager.registerListener(this, accelerometerSensor.sensor, 10000, (int) maxReportLatencyNs);
-        accelerometerSensor.sensorManager.registerListener(this, linearAccelerationSensor.sensor, 10000, (int) maxReportLatencyNs);
-        accelerometerSensor.sensorManager.registerListener(this, gravitySensor.sensor, 10000, (int) maxReportLatencyNs);
-        barometerSensor.sensorManager.registerListener(this, barometerSensor.sensor, (int) 1e6);
-        gyroscopeSensor.sensorManager.registerListener(this, gyroscopeSensor.sensor, 10000, (int) maxReportLatencyNs);
-        lightSensor.sensorManager.registerListener(this, lightSensor.sensor, (int) 1e6);
-        proximitySensor.sensorManager.registerListener(this, proximitySensor.sensor, (int) 1e6);
-        magnetometerSensor.sensorManager.registerListener(this, magnetometerSensor.sensor, 10000, (int) maxReportLatencyNs);
-        stepDetectionSensor.sensorManager.registerListener(this, stepDetectionSensor.sensor, SensorManager.SENSOR_DELAY_NORMAL);
-        rotationSensor.sensorManager.registerListener(this, rotationSensor.sensor, (int) 1e6);
-        wifiProcessor.startListening();
-        gnssProcessor.startLocationUpdates();
-    }
-
-    /**
-     * Un-registers all device listeners and pauses data collection.
-     *
-     * Should be called from {@link MainActivity} when pausing the application.
-     *
-     * @see MovementSensor handles SensorManager based devices.
-     * @see WifiDataProcessor handles wifi data.
-     * @see GNSSDataProcessor handles location data.
-     */
-    public void stopListening() {
-        if(!saveRecording) {
-            // Unregister sensor-manager based devices
-            accelerometerSensor.sensorManager.unregisterListener(this);
-            barometerSensor.sensorManager.unregisterListener(this);
-            gyroscopeSensor.sensorManager.unregisterListener(this);
-            lightSensor.sensorManager.unregisterListener(this);
-            proximitySensor.sensorManager.unregisterListener(this);
-            magnetometerSensor.sensorManager.unregisterListener(this);
-            stepDetectionSensor.sensorManager.unregisterListener(this);
-            rotationSensor.sensorManager.unregisterListener(this);
-            linearAccelerationSensor.sensorManager.unregisterListener(this);
-            gravitySensor.sensorManager.unregisterListener(this);
-            //The app often crashes here because the scan receiver stops after it has found the list.
-            // It will only unregister one if there is to unregister
-            try {
-                this.wifiProcessor.stopListening(); //error here?
-            } catch (Exception e) {
-                System.err.println("Wifi resumed before existing");
-            }
-            // Stop receiving location updates
-            this.gnssProcessor.stopUpdating();
-        }
-    }
-
-    /**
-     * Enables saving sensor values to the trajectory object.
-     *
-     * Sets save recording to true, resets the absolute start time and create new timer object for
-     * periodically writing data to trajectory.
-     *
-     * @see Traj object for storing data.
-     */
-    public void startRecording(@NonNull Context context) {
-        // If w`        ZakeLock is null (e.g. not initialized or was cleared), reinitialize it.
-                 if (wakeLock == null) {
-            PowerManager powerManager = (PowerManager) this.appContext.getSystemService(Context.POWER_SERVICE);
-            wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MyApp::MyWakelockTag");
-        }
-        wakeLock.acquire(31 * 60 * 1000L /*31 minutes*/);
-
-        this.saveRecording = true;
-        this.stepCounter = 0;
-        this.absoluteStartTime = System.currentTimeMillis();
-        this.bootTime = SystemClock.uptimeMillis();
-        // Protobuf trajectory class for sending sensor data to restful API
-        this.trajectory = Traj.Trajectory.newBuilder()
-                .setAndroidVersion(Build.VERSION.RELEASE)
-                .setStartTimestamp(absoluteStartTime)
-                .setAccelerometerInfo(createInfoBuilder(accelerometerSensor))
-                .setGyroscopeInfo(createInfoBuilder(gyroscopeSensor))
-                .setMagnetometerInfo(createInfoBuilder(magnetometerSensor))
-                .setBarometerInfo(createInfoBuilder(barometerSensor))
-                .setLightSensorInfo(createInfoBuilder(lightSensor));
-
-
-
-        this.storeTrajectoryTimer = new Timer();
-        this.storeTrajectoryTimer.schedule(new storeDataInTrajectory(), 0, TIME_CONST);
-        this.pdrProcessing.resetPDR();
-        if(settings.getBoolean("overwrite_constants", false)) {
-            this.filter_coefficient = Float.parseFloat(settings.getString("accel_filter", "0.96"));
-        } else {
-            this.filter_coefficient = FILTER_COEFFICIENT;
-        }
-
-        // First check if orientation is null
-        if (orientation == null || orientation.length < 1) {
-            Log.e("SensorFusion", "Orientation array is null or uninitialized!");
-            return;
-        }
-
-        // Get GNSS initial latitude and longitude, using system lastKnownLocation first, then fallback to polling
-        float[] initLatLon = new float[2];
-        LocationManager locationManager = (LocationManager) appContext.getSystemService(Context.LOCATION_SERVICE);
-
-        if (ActivityCompat.checkSelfPermission(appContext, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-            ActivityCompat.checkSelfPermission(appContext, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-            float[] gnss = sensorFusion.getSensorValueMap().get(SensorTypes.GNSSLATLONG);
-            Location lastKnownLocation = new Location(LocationManager.GPS_PROVIDER);
-            assert gnss != null;
-            lastKnownLocation.setLatitude(gnss[0]);
-            lastKnownLocation.setLongitude(gnss[1]);
-            initLatLon[0] = (float) lastKnownLocation.getLatitude();
-            initLatLon[1] = (float) lastKnownLocation.getLongitude();
-            Log.d("SensorFusion", "Using lastKnownLocation: " + initLatLon[0] + ", " + initLatLon[1]);
-        }
-
-        double initAltitude = 0.0;
-        if (initLatLon[0] == 0.0 && initLatLon[1] == 0.0) {
-            Log.e("SensorFusion", "GNSS lastKnownLocation unavailable, trying polling fallback.");
-//            for (int i = 0; i < 10; i++) {
-//                SystemClock.sleep(1000);
-//                float[] polled = getGNSSLatitude(true);
-//                if (polled[0] != 0.0 || polled[1] != 0.0) {
-//                    initLatLon = polled;
-//                    break;
-//                }
-//            }
-        }
-
-        if (initLatLon[0] == 0.0 && initLatLon[1] == 0.0) {
-            // After multiple attempts, still invalid: delay error logging until now.
-            Log.e("SensorFusion", "GNSS fix still unavailable after multiple attempts, using default reference!");
-            ecefRefCoords = new double[]{0.0, 0.0, 0.0};
-            } else {
-                Log.d("SensorFusion", "GNSS initial LatLon: " + initLatLon[0] + ", " + initLatLon[1]);
-                if (ActivityCompat.checkSelfPermission(appContext, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-                    ActivityCompat.checkSelfPermission(appContext, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-                    float[] gnss = sensorFusion.getSensorValueMap().get(SensorTypes.GNSSLATLONG);
-                    Location lastKnownLocation = new Location(LocationManager.GPS_PROVIDER);
-                    assert gnss != null;
-                    lastKnownLocation.setLatitude(gnss[0]);
-                    lastKnownLocation.setLongitude(gnss[1]);
-                    initLatLon[0] = (float) lastKnownLocation.getLatitude();
-                    initLatLon[1] = (float) lastKnownLocation.getLongitude();
-                    if (lastKnownLocation != null) {
-                        initAltitude = lastKnownLocation.getAltitude();
-                        Log.d("SensorFusion", "Using lastKnownLocation: " + initLatLon[0] + ", " + initLatLon[1] + ", Alt=" + initAltitude);
-                    }
-                }
-                refLat = initLatLon[0];
-                refLon = initLatLon[1];
-                refAlt = initAltitude;
-                // Convert GNSS latitude and longitude to ECEF coordinates
-                ecefRefCoords = CoordinateTransform.geodeticToEcef(initLatLon[0], initLatLon[1], initAltitude);
-                if (ecefRefCoords == null || ecefRefCoords.length < 3) {
-                    Log.e("SensorFusion", "Failed to compute ECEF reference coordinates! Using default.");
-                    ecefRefCoords = new double[]{0.0, 0.0, 0.0};
-                } else {
-                    Log.d("SensorFusion", "Computed ECEF reference: X=" + ecefRefCoords[0] +
-                            ", Y=" + ecefRefCoords[1] + ", Z=" + ecefRefCoords[2]);
-                }
-            }
-        // Ensure startRef is set only once based on the final valid (or default) ECEF coordinates.
-        startRef = ecefRefCoords.clone();
-        Log.d("SensorFusion", "startRef initialized with ECEF reference: " +
-                "X=" + startRef[0] + ", Y=" + startRef[1] + ", Z=" + startRef[2]);
-
-        // Perform geographic coordinate transformation
-        double[] enuCoords = CoordinateTransform.geodeticToEnu(
-                initLatLon[0], initLatLon[1], initAltitude,
-                refLat, refLon, refAlt
-        );
-        this.pdrProcessing.resetPDR();
-        Log.d("SensorFusion", "Setting PDR initial ENU to: x=" + enuCoords[0] + ", y=" + enuCoords[1]);
-        pdrProcessing.setInitialPosition((float) enuCoords[0], (float) enuCoords[1]);
-
-
-        // Get current device orientation
-        double initialTheta = wrapToPi(this.orientation[0]);
-
-        Log.d("SensorFusion", "First EKF Init: Lat=" + initLatLon[0] + ", Lon=" + initLatLon[1]);
-        Log.d("SensorFusion", "Initial Theta=" + initialTheta);
-
-        // Initialize EKF
-        extendedKalmanFilter = new EKF(enuCoords[0], enuCoords[1], 0.0, initialTheta);
-        Log.d("SensorFusion", "EKF initialized successfully: " +
-                "East=" + enuCoords[0] + ", North=" + enuCoords[1] + ", Theta=" + initialTheta);
-        // Initialize PF
+    private synchronized void initializePositionFusion(double latitude, double longitude, double altitude) {
+        if (fusionInitialized || !Double.isFinite(latitude) || !Double.isFinite(longitude)
+                || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180
+                || (latitude == 0.0 && longitude == 0.0)) return;
+        float[] start = state.startLocation;
+        boolean hasSelectedStart = start[0] != 0.0f || start[1] != 0.0f;
+        refLat = hasSelectedStart ? start[0] : latitude;
+        refLon = hasSelectedStart ? start[1] : longitude;
+        refAlt = Double.isFinite(altitude) ? altitude : 0.0;
+        extendedKalmanFilter = new EKF(0.0, 0.0, 0.0, state.orientation[0]);
         particleFilter = new ParticleFilter(100, refLat, refLon, refAlt);
-        particleFilter.initializeParticles(enuCoords[0], enuCoords[1], initialTheta, 1.0, 1.0, 0.1);
+        particleFilter.initializeParticles(0.0, 0.0, state.orientation[0], 1.0, 1.0, 0.1);
+        previousHeading = state.orientation[0];
+        fusionInitialized = true;
+        Log.i("SensorFusion", "Experimental EKF/PF initialized in local ENU frame");
     }
 
+    private void onWifiPosition(LatLng position, int floor) {
+        if (position == null) return;
+        initializePositionFusion(position.latitude, position.longitude, refAlt);
+        if (!fusionInitialized) return;
+        double[] enu = CoordinateTransform.geodeticToEnu(
+                position.latitude, position.longitude, refAlt, refLat, refLon, refAlt);
+        double now = android.os.SystemClock.uptimeMillis();
+        double elapsed = lastFusionMeasurementMs == 0 ? 0 : now - lastFusionMeasurementMs;
+        double avgRssi = latestWifiList.stream().mapToInt(Wifi::getLevel).average().orElse(-85.0);
+        double base = avgRssi > -50 ? 3.0 : (avgRssi > -75 ? 4.0 : 5.0);
+        double penalty = base * (1.0 + Math.min(elapsed / 10000.0, 3.0));
+        extendedKalmanFilter.update(enu[0], enu[1], penalty);
+        particleFilter.updateWiFi(enu[0], enu[1]);
+        particleFilter.resample();
+        lastFusionMeasurementMs = (long) now;
+        if (trajectoryMapFragment != null) trajectoryMapFragment.updateWifiLocation(position, 0f);
+        Consumer<Integer> listener = wifiFloorChangedListener;
+        if (listener != null) listener.accept(floor);
+    }
 
+    private synchronized void onGnssPosition(Location location) {
+        if (location == null) return;
+        initializePositionFusion(location.getLatitude(), location.getLongitude(), location.getAltitude());
+        if (!fusionInitialized || (location.hasAccuracy() && location.getAccuracy() >= 20f)) return;
+        double[] enu = CoordinateTransform.geodeticToEnu(location.getLatitude(),
+                location.getLongitude(), location.getAltitude(), refLat, refLon, refAlt);
+        extendedKalmanFilter.updateGNSS(enu[0], enu[1], enu[2], 1.0);
+        particleFilter.updateGNSS(location.getLatitude(), location.getLongitude());
+        particleFilter.resample();
+    }
 
-    private LatLng getSmoothedWifiPosition(LatLng newWifiPos) {
-        wifiPosWindow.add(newWifiPos);
-        if (wifiPosWindow.size() > WIFI_POS_SMOOTH_WINDOW) {
-            wifiPosWindow.remove(0); // Maintain a fixed window size
+    private synchronized void onPdrStep(float[] pdrPosition, float stepLength,
+                                         float headingRadians, long timestampMs) {
+        if (fusionInitialized && extendedKalmanFilter != null && particleFilter != null) {
+            double heading = headingRadians;
+            double deltaHeading = heading - previousHeading;
+            while (deltaHeading > Math.PI) deltaHeading -= 2 * Math.PI;
+            while (deltaHeading < -Math.PI) deltaHeading += 2 * Math.PI;
+            previousHeading = heading;
+            extendedKalmanFilter.predict(Math.max(0.0, stepLength), deltaHeading);
+            particleFilter.predict(Math.max(0.0, stepLength), deltaHeading);
+            if (state.stepCounter % 5 == 0) particleFilter.resample();
+            double[] pfPosition = particleFilter.getEstimate2D();
+            double[] ekfPosition = extendedKalmanFilter.getEstimatedPositionENU();
+            double disagreement = Math.hypot(ekfPosition[0] - pfPosition[0],
+                    ekfPosition[1] - pfPosition[1]);
+            if (disagreement > 10.0 && particleFilter.computeEntropy() < 5.0) {
+                extendedKalmanFilter.resetPosition(pfPosition[0], pfPosition[1]);
+                Log.d("SensorFusion", "EKF position reset from confident particle estimate; disagreement="
+                        + disagreement + " m");
+            }
+            LatLng estimate = extendedKalmanFilter.getEstimatedPosition(refLat, refLon, refAlt);
+            if (trajectoryMapFragment != null && estimate != null) {
+                trajectoryMapFragment.updateFusionLocation(estimate,
+                        (float) Math.toDegrees(extendedKalmanFilter.getHeading()));
+            }
         }
-
-        List<Double> latList = wifiPosWindow.stream().map(p -> p.latitude).sorted().collect(Collectors.toList());
-        List<Double> lonList = wifiPosWindow.stream().map(p -> p.longitude).sorted().collect(Collectors.toList());
-
-        double medianLat = latList.get(latList.size() / 2);
-        double medianLon = lonList.get(lonList.size() / 2);
-        return new LatLng(medianLat, medianLon);
     }
 
-
-    /**
-     * Disables saving sensor values to the trajectory object.
-     *
-     * Check if a recording is in progress. If it is, it sets save recording to false, and cancels
-     * the timer objects.
-     *
-     * @see Traj object for storing data.
-     * @see SettingsFragment navigation that might cancel recording.
-     */
-    public void stopRecording() {
-        // Only cancel if we are running
-        if(this.saveRecording) {
-            this.saveRecording = false;
-            storeTrajectoryTimer.cancel();
-        }
-        if(wakeLock.isHeld()) {
-            this.wakeLock.release();
-        }
+    public WiFiPositioning getWiFiPositioning() {
+        return wifiPositionManager == null ? null : wiFiPositioning;
     }
 
-    public void setTrajectoryMapFragment(com.openpositioning.PositionMe.presentation.fragment.TrajectoryMapFragment fragment) {
-        this.trajectoryMapFragment = fragment;
-    }
+    private WiFiPositioning wiFiPositioning;
 
-    //endregion
-
-    //region Trajectory object
-
-    /**
-     * Send the trajectory object to servers.
-     *
-     * @see ServerCommunications for sending and receiving data via HTTPS.
-     */
-    public void sendTrajectoryToCloud() {
-        // Build object
-        Traj.Trajectory sentTrajectory = trajectory.build();
-        // Pass object to communications object
-        this.serverCommunications.sendTrajectory(sentTrajectory);
-    }
-
-    /**
-     * Creates a {@link Traj.Sensor_Info} objects from the specified sensor's data.
-     *
-     * @param sensor    MovementSensor objects with populated sensorInfo fields
-     * @return          Traj.SensorInfo object to be used in building the trajectory
-     *
-     * @see Traj            Trajectory object used for communication with the server
-     * @see MovementSensor  class abstracting SensorManager based sensors
-     */
-    private Traj.Sensor_Info.Builder createInfoBuilder(MovementSensor sensor) {
-        return SensorFusionUtils.createInfoBuilder(sensor);
-    }
-
-
-    /**
-     * Returns a JSONObject containing all sensor data (IMU, GNSS, WiFi, PDR, etc.).
-     * This is a helper method to unify data retrieval for logs or training.
-     *
-     * @return JSONObject with keys for all sensor readings.
-     */
     public JSONObject getAllSensorData() {
-        return SensorFusionUtils.getAllSensorData(this, wiFiPositioning);  // "this" = current SensorFusion
+        return SensorFusionUtils.getAllSensorData(this, wiFiPositioning);
     }
 
-    private double computeDistance(LatLng a, LatLng b) {
-        double latDiff = (a.latitude - b.latitude) * 111000;
-        double lonDiff = (a.longitude - b.longitude) * 111000 * Math.cos(Math.toRadians((a.latitude + b.latitude) / 2));
-        return Math.sqrt(latDiff * latDiff + lonDiff * lonDiff);
+    public float getGnssAccuracy() { return gnssAccuracy; }
+
+    public void setTrajectoryMapFragment(
+            com.openpositioning.PositionMe.presentation.fragment.TrajectoryMapFragment fragment) {
+        trajectoryMapFragment = fragment;
     }
 
     public void setOnWifiFloorChangedListener(Consumer<Integer> listener) {
-        this.wifiFloorChangedListener = listener;
+        wifiFloorChangedListener = listener;
     }
+
+    SensorState sensorState() { return state; }
+    List<Wifi> latestWifiList() { return new ArrayList<>(latestWifiList); }
+
+    //region Location listener
 
     /**
-     * Timer task to record data with the desired frequency in the trajectory class.
-     *
-     * Inherently threaded, runnables are created and
-     * destroyed in {@link SensorFusion#stopRecording()}.
+     * Location listener class to receive updates from the location manager.
+     * Writes position data to {@link SensorState} and GNSS readings to
+     * {@link TrajectoryRecorder}.
      */
-    private class storeDataInTrajectory extends TimerTask {
-        public void run() {
-            // Store IMU and magnetometer data in Trajectory class
-            trajectory.addImuData(Traj.Motion_Sample.newBuilder()
-                    .setRelativeTimestamp(SystemClock.uptimeMillis()-bootTime)
-                    .setAccX(acceleration[0])
-                    .setAccY(acceleration[1])
-                    .setAccZ(acceleration[2])
-                    .setGyrX(angularVelocity[0])
-                    .setGyrY(angularVelocity[1])
-                    .setGyrZ(angularVelocity[2])
-                    .setGyrZ(angularVelocity[2])
-                    .setRotationVectorX(rotation[0])
-                    .setRotationVectorY(rotation[1])
-                    .setRotationVectorZ(rotation[2])
-                    .setRotationVectorW(rotation[3])
-                    .setStepCount(stepCounter))
-                    .addPositionData(Traj.Position_Sample.newBuilder()
-                            .setMagX(magneticField[0])
-                            .setMagY(magneticField[1])
-                            .setMagZ(magneticField[2])
-                            .setRelativeTimestamp(SystemClock.uptimeMillis()-bootTime))
-//                    .addGnssData(Traj.GNSS_Sample.newBuilder()
-//                            .setLatitude(latitude)
-//                            .setLongitude(longitude)
-//                            .setRelativeTimestamp(SystemClock.uptimeMillis()-bootTime))
-            ;
-
-            // Divide timer with a counter for storing data every 1 second
-            if (counter == 99) {
-                counter = 0;
-                // Store pressure and light data
-                if (barometerSensor.sensor != null) {
-                    trajectory.addPressureData(Traj.Pressure_Sample.newBuilder()
-                                    .setPressure(pressure)
-                                    .setRelativeTimestamp(SystemClock.uptimeMillis() - bootTime))
-                            .addLightData(Traj.Light_Sample.newBuilder()
-                                    .setLight(light)
-                                    .setRelativeTimestamp(SystemClock.uptimeMillis() - bootTime)
-                                    .build());
-                }
-
-                // Divide the timer for storing AP data every 5 seconds
-                if (secondCounter == 4) {
-                    secondCounter = 0;
-                    //Current Wifi Object
-                    Wifi currentWifi = wifiProcessor.getCurrentWifiData();
-                    trajectory.addApsData(Traj.AP_Data.newBuilder()
-                            .setMac(currentWifi.getBssid())
-                            .setSsid(currentWifi.getSsid())
-                            .setFrequency(currentWifi.getFrequency()));
-                }
-                else {
-                    secondCounter++;
-                }
-            }
-            else {
-                counter++;
-            }
-
+    class MyLocationListener implements LocationListener {
+        @Override
+        public void onLocationChanged(@NonNull Location location) {
+            state.latitude = (float) location.getLatitude();
+            state.longitude = (float) location.getLongitude();
+            gnssAccuracy = location.hasAccuracy() ? location.getAccuracy() : Float.MAX_VALUE;
+            recorder.addGnssData(location);
+            onGnssPosition(location);
         }
     }
+
+    //endregion
 }
-
-
-

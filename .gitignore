@@ -18,3 +18,9 @@ local.properties
 /machine_learning/__pycache__
 machine_learning/debug_plot.png
 /machine_learning/data
+
+# Local credentials and signing material
+/secrets.properties
+*.jks
+*.keystore
+/app/.idea/

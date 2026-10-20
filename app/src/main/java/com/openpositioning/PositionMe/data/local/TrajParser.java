@@ -7,6 +7,7 @@ import android.util.Log;
 import com.google.android.gms.maps.model.LatLng;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.openpositioning.PositionMe.presentation.fragment.ReplayFragment;
@@ -203,33 +204,116 @@ public class TrajParser {
 private static List<ImuRecord> parseImuData(JsonArray imuArray) {
     List<ImuRecord> imuList = new ArrayList<>();
     if (imuArray == null) return imuList;
-    Gson gson = new Gson();
-    for (int i = 0; i < imuArray.size(); i++) {
-        ImuRecord record = gson.fromJson(imuArray.get(i), ImuRecord.class);
-        imuList.add(record);
+    for (JsonElement element : imuArray) {
+        if (element == null || !element.isJsonObject()) continue;
+        ImuRecord record = normalizeImuRecord(element.getAsJsonObject());
+        if (record != null) imuList.add(record);
     }
     return imuList;
-}/** Parses PDR data from JSON. */
+}
+
+/** Converts either legacy flat IMU JSON or current nested protobuf JSON into a replay record. */
+public static ImuRecord normalizeImuRecord(JsonObject json) {
+    if (json == null) return null;
+    ImuRecord record = new ImuRecord();
+    record.relativeTimestamp = readLong(json, "relativeTimestamp", 0L);
+    record.accX = readFloat(json, "accX", 0F);
+    record.accY = readFloat(json, "accY", 0F);
+    record.accZ = readFloat(json, "accZ", 0F);
+    record.gyrX = readFloat(json, "gyrX", 0F);
+    record.gyrY = readFloat(json, "gyrY", 0F);
+    record.gyrZ = readFloat(json, "gyrZ", 0F);
+    record.rotationVectorX = readFloat(json, "rotationVectorX", 0F);
+    record.rotationVectorY = readFloat(json, "rotationVectorY", 0F);
+    record.rotationVectorZ = readFloat(json, "rotationVectorZ", 0F);
+    record.rotationVectorW = readFloat(json, "rotationVectorW", 0F);
+
+    JsonObject acc = readObject(json, "acc");
+    if (acc != null) {
+        record.accX = readFloat(acc, "x", record.accX);
+        record.accY = readFloat(acc, "y", record.accY);
+        record.accZ = readFloat(acc, "z", record.accZ);
+    }
+    JsonObject gyr = readObject(json, "gyr");
+    if (gyr != null) {
+        record.gyrX = readFloat(gyr, "x", record.gyrX);
+        record.gyrY = readFloat(gyr, "y", record.gyrY);
+        record.gyrZ = readFloat(gyr, "z", record.gyrZ);
+    }
+    JsonObject rotation = readObject(json, "rotationVector");
+    if (rotation != null) {
+        record.rotationVectorX = readFloat(rotation, "x", record.rotationVectorX);
+        record.rotationVectorY = readFloat(rotation, "y", record.rotationVectorY);
+        record.rotationVectorZ = readFloat(rotation, "z", record.rotationVectorZ);
+        record.rotationVectorW = readFloat(rotation, "w", record.rotationVectorW);
+    }
+    return record;
+}
+
+/** Parses PDR data from JSON. */
 private static List<PdrRecord> parsePdrData(JsonArray pdrArray) {
     List<PdrRecord> pdrList = new ArrayList<>();
     if (pdrArray == null) return pdrList;
     Gson gson = new Gson();
     for (int i = 0; i < pdrArray.size(); i++) {
-        PdrRecord record = gson.fromJson(pdrArray.get(i), PdrRecord.class);
-        pdrList.add(record);
+        JsonElement element = pdrArray.get(i);
+        if (element == null || !element.isJsonObject()) continue;
+        PdrRecord record = gson.fromJson(element, PdrRecord.class);
+        if (record != null) pdrList.add(record);
     }
     return pdrList;
 }/** Parses GNSS data from JSON. */
 private static List<GnssRecord> parseGnssData(JsonArray gnssArray) {
     List<GnssRecord> gnssList = new ArrayList<>();
     if (gnssArray == null) return gnssList;
-    Gson gson = new Gson();
-    for (int i = 0; i < gnssArray.size(); i++) {
-        GnssRecord record = gson.fromJson(gnssArray.get(i), GnssRecord.class);
-        gnssList.add(record);
+    for (JsonElement element : gnssArray) {
+        if (element == null || !element.isJsonObject()) continue;
+        GnssRecord record = normalizeGnssRecord(element.getAsJsonObject());
+        if (record != null) gnssList.add(record);
     }
     return gnssList;
-}/** Finds the closest IMU record to the given timestamp. */
+}
+
+/** Converts either legacy flat GNSS JSON or current nested protobuf JSON to a replay record. */
+public static GnssRecord normalizeGnssRecord(JsonObject json) {
+    if (json == null) return null;
+    GnssRecord record = new GnssRecord();
+    record.relativeTimestamp = readLong(json, "relativeTimestamp", 0L);
+    record.latitude = readDouble(json, "latitude", 0D);
+    record.longitude = readDouble(json, "longitude", 0D);
+    JsonObject position = readObject(json, "position");
+    if (position != null) {
+        record.relativeTimestamp = readLong(position, "relativeTimestamp", record.relativeTimestamp);
+        record.latitude = readDouble(position, "latitude", record.latitude);
+        record.longitude = readDouble(position, "longitude", record.longitude);
+    }
+    return record;
+}
+
+private static JsonObject readObject(JsonObject parent, String key) {
+    JsonElement value = parent.get(key);
+    return value != null && value.isJsonObject() ? value.getAsJsonObject() : null;
+}
+
+private static float readFloat(JsonObject parent, String key, float fallback) {
+    JsonElement value = parent.get(key);
+    if (value == null || value.isJsonNull()) return fallback;
+    try { return value.getAsFloat(); } catch (RuntimeException ignored) { return fallback; }
+}
+
+private static double readDouble(JsonObject parent, String key, double fallback) {
+    JsonElement value = parent.get(key);
+    if (value == null || value.isJsonNull()) return fallback;
+    try { return value.getAsDouble(); } catch (RuntimeException ignored) { return fallback; }
+}
+
+private static long readLong(JsonObject parent, String key, long fallback) {
+    JsonElement value = parent.get(key);
+    if (value == null || value.isJsonNull()) return fallback;
+    try { return value.getAsLong(); } catch (RuntimeException ignored) { return fallback; }
+}
+
+/** Finds the closest IMU record to the given timestamp. */
 private static ImuRecord findClosestImuRecord(List<ImuRecord> imuList, long targetTimestamp) {
     return imuList.stream().min(Comparator.comparingLong(imu -> Math.abs(imu.relativeTimestamp - targetTimestamp)))
             .orElse(null);
@@ -241,6 +325,7 @@ private static GnssRecord findClosestGnssRecord(List<GnssRecord> gnssList, long 
 
 }/** Computes the orientation from a rotation vector. */
 private static float computeOrientationFromRotationVector(float rx, float ry, float rz, float rw, Context context) {
+    if (context == null) return 0f;
     float[] rotationVector = new float[]{rx, ry, rz, rw};
     float[] rotationMatrix = new float[9];
     float[] orientationAngles = new float[3];

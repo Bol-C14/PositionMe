@@ -56,6 +56,11 @@ public class MainActivity extends AppCompatActivity implements Observer {
         // Force light mode theme
         AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO);
 
+        // Initialize sensor fusion before inflating the navigation host. Its default
+        // RecordingFragment can be created during setContentView().
+        sensorFusion = SensorFusion.getInstance();
+        sensorFusion.setContext(getApplicationContext());
+
         // Load main layout
         setContentView(R.layout.activity_main);
 
@@ -90,9 +95,13 @@ public class MainActivity extends AppCompatActivity implements Observer {
         multiplePermissionsLauncher = registerForActivityResult(
                 new ActivityResultContracts.RequestMultiplePermissions(),
                 result -> {
-                    boolean locationGranted = result.getOrDefault(Manifest.permission.ACCESS_FINE_LOCATION, false);
+                    boolean locationGranted = result.getOrDefault(Manifest.permission.ACCESS_FINE_LOCATION,
+                            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                                    == PackageManager.PERMISSION_GRANTED);
                     boolean activityGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
-                            || result.getOrDefault(Manifest.permission.ACTIVITY_RECOGNITION, false);
+                            || result.getOrDefault(Manifest.permission.ACTIVITY_RECOGNITION,
+                            ContextCompat.checkSelfPermission(this, Manifest.permission.ACTIVITY_RECOGNITION)
+                                    == PackageManager.PERMISSION_GRANTED);
 
                     if (locationGranted && activityGranted) {
                         allPermissionsObtained();
@@ -101,11 +110,18 @@ public class MainActivity extends AppCompatActivity implements Observer {
                                 "Location or Physical Activity permission denied. Some features may not work.",
                                 Toast.LENGTH_LONG).show();
                     }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                            && (!result.getOrDefault(Manifest.permission.BLUETOOTH_SCAN, true)
+                            || !result.getOrDefault(Manifest.permission.BLUETOOTH_CONNECT, true))) {
+                        Toast.makeText(this, "Bluetooth access was denied. BLE positioning is unavailable.",
+                                Toast.LENGTH_SHORT).show();
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                            && !result.getOrDefault(Manifest.permission.NEARBY_WIFI_DEVICES, true)) {
+                        Toast.makeText(this, "Nearby Wi-Fi access was denied. Wi-Fi scanning may be limited.",
+                                Toast.LENGTH_SHORT).show();
+                    }
                 });
-
-        // Initialize sensor fusion and register context
-        sensorFusion = SensorFusion.getInstance();
-        sensorFusion.setContext(getApplicationContext());
 
         // Handler to run toast notifications on the UI thread
         httpResponseHandler = new Handler();
@@ -131,28 +147,40 @@ public class MainActivity extends AppCompatActivity implements Observer {
                         || ContextCompat.checkSelfPermission(
                         this, Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED;
 
-                if (!locationGranted || !activityGranted) {
-                    // Launch permission request
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        multiplePermissionsLauncher.launch(new String[]{
-                                Manifest.permission.ACCESS_FINE_LOCATION,
-                                Manifest.permission.ACTIVITY_RECOGNITION
-                        });
-                    } else {
-                        multiplePermissionsLauncher.launch(new String[]{
-                                Manifest.permission.ACCESS_FINE_LOCATION
-                        });
+                java.util.List<String> permissionsToRequest = new java.util.ArrayList<>();
+                if (!locationGranted) permissionsToRequest.add(Manifest.permission.ACCESS_FINE_LOCATION);
+                if (!activityGranted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    permissionsToRequest.add(Manifest.permission.ACTIVITY_RECOGNITION);
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN)
+                            != PackageManager.PERMISSION_GRANTED) {
+                        permissionsToRequest.add(Manifest.permission.BLUETOOTH_SCAN);
                     }
+                    if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
+                            != PackageManager.PERMISSION_GRANTED) {
+                        permissionsToRequest.add(Manifest.permission.BLUETOOTH_CONNECT);
+                    }
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                        && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                        != PackageManager.PERMISSION_GRANTED) {
+                    permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS);
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                        && ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES)
+                        != PackageManager.PERMISSION_GRANTED) {
+                    permissionsToRequest.add(Manifest.permission.NEARBY_WIFI_DEVICES);
+                }
+
+                if (!permissionsToRequest.isEmpty()) {
+                    multiplePermissionsLauncher.launch(permissionsToRequest.toArray(new String[0]));
                 } else {
                     allPermissionsObtained();
                 }
             }
         });
 
-        // Resume sensor data collection
-        if (sensorFusion != null) {
-            sensorFusion.resumeListening();
-        }
     }
 
     /**
@@ -161,14 +189,21 @@ public class MainActivity extends AppCompatActivity implements Observer {
      */
     private void allPermissionsObtained() {
         sensorFusion.registerForServerUpdate(this);
+        sensorFusion.resumeListening();
     }
 
     /**
      * Optional override. Could be used to stop sensors when activity is destroyed.
      */
     @Override
+    protected void onPause() {
+        super.onPause();
+        if (sensorFusion != null) sensorFusion.stopListening();
+    }
+
+    @Override
     protected void onDestroy() {
-        // sensorFusion.stopListening(); // Uncomment if you wish to explicitly stop sensors
+        if (sensorFusion != null) sensorFusion.stopListening();
         super.onDestroy();
     }
 

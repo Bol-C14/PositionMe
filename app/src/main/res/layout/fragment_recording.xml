@@ -75,6 +75,19 @@
                     app:strokeWidth="0dp"
                     android:backgroundTint="@color/md_theme_light_primary"
                     app:iconPadding="0dp" />
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/addTestPointButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="56dp"
+                    android:layout_marginStart="8dp"
+                    android:text="Test point"
+                    android:contentDescription="Add a timestamped test point"
+                    app:icon="@android:drawable/ic_input_add"
+                    app:iconGravity="textStart"
+                    app:iconSize="20dp"
+                    app:cornerRadius="16dp"
+                    app:backgroundTint="@color/md_theme_primary"
+                    app:iconTint="@color/md_theme_onPrimary" />
             </LinearLayout>
 
             <!-- Spacer -->
