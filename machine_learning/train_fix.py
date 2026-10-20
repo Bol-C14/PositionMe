@@ -12,9 +12,9 @@ from plotting import plot_results
 
 def main():
     # Step 1: Locate all .json files under /data
-    file_list = glob.glob("./data/*.json")
+    file_list = sorted(glob.glob("./data/*.json") + glob.glob("./data/*.jsonl"))
     if not file_list:
-        print("No .json files found in ./data. Exiting.")
+        print("No .json or .jsonl files found in ./data. Exiting.")
         sys.exit(1)
 
     all_aligned_trimmed = []  # Stores all aligned and trimmed records across files

@@ -1,8 +1,6 @@
 package com.openpositioning.PositionMe.presentation.fragment;
 
-import android.content.res.ColorStateList;
 import android.os.Bundle;
-import android.os.Handler;
 import android.text.TextUtils;
 import android.util.Log;
 import android.view.LayoutInflater;
@@ -16,7 +14,6 @@ import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
-import androidx.core.content.ContextCompat;
 import androidx.fragment.app.Fragment;
 
 import com.google.android.gms.maps.GoogleMap;
@@ -25,17 +22,17 @@ import com.google.android.gms.maps.model.Marker;
 import com.google.android.gms.maps.model.MarkerOptions;
 import com.google.android.material.button.MaterialButton;
 import com.openpositioning.PositionMe.R;
-import com.openpositioning.PositionMe.data.local.DataFileManager;
+import com.openpositioning.PositionMe.application.recording.RecordingSessionCollector;
+import com.openpositioning.PositionMe.domain.recording.SessionState;
 import com.openpositioning.PositionMe.sensors.SensorFusion;
 import com.openpositioning.PositionMe.utils.CalibrationUtils;
 
 import org.json.JSONObject;
 
-import java.util.List;
 
 /**
  * CalibrationFragment that:
- *  - Allows starting/stopping passive recording of sensor data at 0.5s intervals.
+ *  - Displays recording state and enables session-owned calibration annotations.
  *  - Enables calibration tagging only if recording is active.
  *  - Counts and displays how many total data records have been stored.
  *  - Compute and display the current and average errors for PDR, GNSS, and WiFi.
@@ -59,7 +56,7 @@ public class CalibrationFragment extends Fragment {
 
     // Data references
     private SensorFusion sensorFusion;
-    private DataFileManager dataFileManager;
+    private RecordingSessionCollector recordingSessionCollector;
     private TrajectoryMapFragment trajectoryMapFragment;
 
     // Marker & calibration state
@@ -69,12 +66,7 @@ public class CalibrationFragment extends Fragment {
     private int selectedIndoorState = 0;
     private String buildingName = null;
 
-    // Passive recording
-    private boolean passiveRecordingActive = false;
-    private Handler passiveRecordingHandler;
-    private Runnable passiveRecordingTask;
-
-    // Count of how many total points have been collected (both passive and calibration)
+    // Count of confirmed calibration annotations.
     private int recordCount = 0;
 
     // Error computation and tracking
@@ -97,8 +89,8 @@ public class CalibrationFragment extends Fragment {
     public void setSensorFusion(SensorFusion sensorFusion) {
         this.sensorFusion = sensorFusion;
     }
-    public void setDataFileManager(DataFileManager dataFileManager) {
-        this.dataFileManager = dataFileManager;
+    public void setRecordingSessionCollector(RecordingSessionCollector collector) {
+        this.recordingSessionCollector = collector;
     }
     public void setTrajectoryMapFragment(TrajectoryMapFragment mapFragment) {
         this.trajectoryMapFragment = mapFragment;
@@ -141,41 +133,11 @@ public class CalibrationFragment extends Fragment {
             }
         });
 
-        // Setup recording button that manage passive recording
-        startRecordingButton.setOnClickListener(v -> {
-            if (!passiveRecordingActive) {
-                startPassiveRecording();
-                passiveRecordingActive = true;
-
-                // Change icon to "stop" icon
-                startRecordingButton.setIcon(ContextCompat.getDrawable(requireContext(), R.drawable.ic_file_check_alt_svgrepo_com));
-
-                // Optional: also change background tint to match
-                startRecordingButton.setBackgroundTintList(
-                        ColorStateList.valueOf(ContextCompat.getColor(requireContext(), R.color.md_theme_errorContainer_mediumContrast))
-                );
-
-            } else {
-                stopPassiveRecording();
-                // close the file
-
-                passiveRecordingActive = false;
-
-                // Change icon to "start" icon
-                startRecordingButton.setIcon(ContextCompat.getDrawable(requireContext(), R.drawable.ic_file_arrow_down_alt_svgrepo_com));
-
-                // Reset background tint
-                startRecordingButton.setBackgroundTintList(
-                        ColorStateList.valueOf(ContextCompat.getColor(requireContext(), R.color.md_theme_primary))
-                );
-                if (dataFileManager != null) {
-                    dataFileManager.close();
-                }
-            }
-        });
+        startRecordingButton.setOnClickListener(v -> toggleSessionRecording());
 
         // Show initial count = 0
         updatePointCountDisplay();
+        updateRecordingControls();
 
         return view;
     }
@@ -378,8 +340,8 @@ public class CalibrationFragment extends Fragment {
                                         int indoorState,
                                         int floorLevel,
                                         String buildingName) {
-        if (sensorFusion == null || dataFileManager == null) {
-            Log.e(TAG, "Cannot trigger calibration; sensorFusion or dataFileManager is null.");
+        if (sensorFusion == null || recordingSessionCollector == null) {
+            Log.e(TAG, "Cannot trigger calibration without an active recording session.");
             return;
         }
         try {
@@ -391,7 +353,7 @@ public class CalibrationFragment extends Fragment {
             calibrationRecord.put("indoorState", indoorState);
             calibrationRecord.put("buildingName", buildingName);
 
-            dataFileManager.addRecord(calibrationRecord);
+            recordingSessionCollector.append(calibrationRecord);
             recordCount++;
             updatePointCountDisplay();
             Log.d(TAG, "Calibration triggered and saved.");
@@ -401,74 +363,29 @@ public class CalibrationFragment extends Fragment {
     }
 
 
-    /************************************************
-     *  Passive Recording (toggle on/off)
-     ************************************************/
-    /**
-     * Starts the passive recording of sensor data at regular intervals.
-     * This method sets up a handler that periodically collects sensor data
-     * and saves it to a file. The recording is active until explicitly stopped.
-     * It also enables the calibration button for tagging.
-     *
-     * @author Shu Gu
-     */
-    private void startPassiveRecording() {
-        passiveRecordingActive = true;
-        calibrationButton.setEnabled(true); // Now user can do tagging
-        // make the calibration button to look enabled
-        calibrationButton.setBackgroundColor(getResources().getColor(R.color.md_theme_primaryContainer_highContrast));
-
-        passiveRecordingHandler = new Handler();
-        passiveRecordingTask = new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    if (sensorFusion != null && dataFileManager != null) {
-                        JSONObject record = sensorFusion.getAllSensorData();
-                        record.put("isCalibration", false);
-                        dataFileManager.addRecord(record);
-                        // recordCount++;    // passive recording not counted into calibration tag total
-                        updatePointCountDisplay();
-                    }
-                } catch (Exception e) {
-                    Log.e(TAG, "Error in passive recording loop", e);
-                }
-                if (passiveRecordingActive) {
-                    passiveRecordingHandler.postDelayed(this, 500);
-                }
-            }
-        };
-        passiveRecordingHandler.post(passiveRecordingTask);
+    private void toggleSessionRecording() {
+        if (sensorFusion == null) return;
+        if (sensorFusion.isRecording()) {
+            sensorFusion.stopRecording();
+            Toast.makeText(getContext(), "Recording stopped and saved.", Toast.LENGTH_SHORT).show();
+        } else {
+            sensorFusion.setStartGNSSLatitude(sensorFusion.getGNSSLatitude(false));
+            sensorFusion.startRecording();
+        }
+        updateRecordingControls();
     }
 
-    /**
-     * Stops the passive recording of sensor data.
-     *
-     * This method disables the calibration button, stops the passive recording
-     * handler, optionally flushes the data buffer, and displays a toast message
-     * indicating that recording has stopped and data has been saved.
-     */
-    private void stopPassiveRecording() {
-        // Set the passive recording flag to false
-        passiveRecordingActive = false;
-
-        // Disable the calibration button as tagging is not allowed when not recording
-        calibrationButton.setEnabled(false);
-        calibrationButton.setBackgroundColor(getResources().getColor(R.color.md_theme_inverseOnSurface));
-
-        // Remove callbacks to stop the passive recording task if the handler and task are not null
-        if (passiveRecordingHandler != null && passiveRecordingTask != null) {
-            passiveRecordingHandler.removeCallbacks(passiveRecordingTask);
+    /** Updates controls from the session owner without collecting or persisting records here. */
+    public void updateRecordingControls() {
+        if (calibrationButton == null || startRecordingButton == null) return;
+        if (recordingSessionCollector == null && sensorFusion != null) {
+            recordingSessionCollector = sensorFusion.getRecordingSessionCollector();
         }
-
-        // Optionally flush or finalize data here
-        if (dataFileManager != null) {
-            dataFileManager.flushBuffer();
-            // dataFileManager.close(); // Uncomment if you want to close the file entirely
-        }
-
-        // Show a toast message indicating that recording has stopped and data has been saved
-        Toast.makeText(getContext(), "Recording stopped and data saved.", Toast.LENGTH_SHORT).show();
+        boolean running = sensorFusion != null && sensorFusion.isRecording()
+                && recordingSessionCollector != null
+                && recordingSessionCollector.getStatus().getState() == SessionState.RUNNING;
+        calibrationButton.setEnabled(running);
+        startRecordingButton.setText(running ? "Stop recording" : "Start recording");
     }
 
     private void updatePointCountDisplay() {
@@ -479,15 +396,4 @@ public class CalibrationFragment extends Fragment {
         }
     }
 
-    /************************************************
-     *  Lifecycle
-     ************************************************/
-    @Override
-    public void onDestroy() {
-        // If still recording, stop
-        if (passiveRecordingActive && passiveRecordingHandler != null && passiveRecordingTask != null) {
-            passiveRecordingHandler.removeCallbacks(passiveRecordingTask);
-        }
-        super.onDestroy();
-    }
 }

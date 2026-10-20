@@ -1,8 +1,6 @@
 package com.openpositioning.PositionMe.domain;
 
-import com.google.android.gms.maps.model.LatLng;
 import org.ejml.simple.SimpleMatrix;
-import com.openpositioning.PositionMe.utils.SmoothingFilter;
 
 /**
  * Extended Kalman Filter (EKF) with state vector [x, y, z, theta].
@@ -21,7 +19,8 @@ public class EKF {
     // WiFi standard deviation used to adjust measurement noise
     private double wifi_std = 0.7;
     // Smoothing filter instance
-    private SmoothingFilter smoothingFilter = new SmoothingFilter(0.7, 2);
+    private final double[] smoothedCoordinates = new double[2];
+    private boolean hasSmoothedCoordinates;
     // Barometer noise (updates z only)
     private double baroNoise;
 
@@ -151,7 +150,7 @@ public class EKF {
         covariance = IminusKH.mult(covariance);
 
         // Smooth the data
-        double[] smoothedCoords = smoothingFilter.applySmoothing(new double[]{state.get(0,0), state.get(1,0)});
+        double[] smoothedCoords = smooth(state.get(0,0), state.get(1,0));
         state.set(0, 0, smoothedCoords[0]);
         state.set(1, 0, smoothedCoords[1]);
     }
@@ -192,14 +191,12 @@ public class EKF {
         covariance = IminusKH.mult(covariance);
     }
 
-    /**
-     * Returns estimated geographic coordinates in LatLng (converted from ENU)
-     */
-    public LatLng getEstimatedPosition(double refLat, double refLon, double refAlt) {
+    /** Returns estimated geographic coordinates converted from this local ENU state. */
+    public GeoPosition getEstimatedPosition(GeoPosition reference) {
         double x = state.get(0,0);
         double y = state.get(1,0);
         double z = state.get(2,0);
-        return com.openpositioning.PositionMe.utils.CoordinateTransform.enuToGeodetic(x, y, z, refLat, refLon, refAlt);
+        return Geodesy.enuToGeodetic(x, y, z, reference);
     }
 
     /**
@@ -245,7 +242,7 @@ public class EKF {
         // Perform correction using the update method
         update(pdrX, pdrY, penaltyFactor);
 
-        double[] smoothedCoords = smoothingFilter.applySmoothing(new double[]{state.get(0,0), state.get(1,0)});
+        double[] smoothedCoords = smooth(state.get(0,0), state.get(1,0));
         state.set(0, 0, smoothedCoords[0]);
         state.set(1, 0, smoothedCoords[1]);
     }
@@ -291,7 +288,7 @@ public class EKF {
         covariance = IminusKH.mult(covariance);
 
         // 数据平滑：调用平滑滤波器并更新状态
-        double[] smoothedCoords = smoothingFilter.applySmoothing(new double[]{state.get(0,0), state.get(1,0)});
+        double[] smoothedCoords = smooth(state.get(0,0), state.get(1,0));
         state.set(0, 0, smoothedCoords[0]);
         state.set(1, 0, smoothedCoords[1]);
     }
@@ -308,5 +305,17 @@ public class EKF {
         covariance.set(0, 1, 0.0);
         covariance.set(1, 0, 0.0);
 
+    }
+
+    private double[] smooth(double x, double y) {
+        if (!hasSmoothedCoordinates) {
+            smoothedCoordinates[0] = x;
+            smoothedCoordinates[1] = y;
+            hasSmoothedCoordinates = true;
+        } else {
+            smoothedCoordinates[0] = 0.7 * x + 0.3 * smoothedCoordinates[0];
+            smoothedCoordinates[1] = 0.7 * y + 0.3 * smoothedCoordinates[1];
+        }
+        return new double[]{smoothedCoordinates[0], smoothedCoordinates[1]};
     }
 }

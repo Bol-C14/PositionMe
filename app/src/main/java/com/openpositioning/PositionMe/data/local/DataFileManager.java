@@ -1,165 +1,92 @@
 package com.openpositioning.PositionMe.data.local;
 
-import android.content.ContentValues;
 import android.content.Context;
-import android.net.Uri;
 import android.os.Build;
-import android.os.Environment;
-import android.provider.MediaStore;
-import android.util.Log;
 
-import androidx.annotation.RequiresApi;
+import com.openpositioning.PositionMe.application.recording.RecordSink;
 
 import org.json.JSONObject;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
 import java.util.Date;
-import java.util.List;
+import java.util.Locale;
+import java.util.UUID;
 
-/**
- * DataFileManager encapsulates all file I/O and buffering logic.
- *
- * It creates a new output file in the public Downloads folder, buffers JSON records,
- * automatically flushes them when a threshold is reached, and finalizes the file on close.
- *
- * @author Shu Gu
- */
-public class DataFileManager {
-    private static final String TAG = "DataFileManager";
-    private static final int FLUSH_THRESHOLD = 50;
+/** Writes newline-delimited JSON records to an app-specific, API 28-safe file. */
+public final class DataFileManager implements RecordSink {
+    private final File outputFile;
+    private FileOutputStream outputStream;
+    private boolean closed;
 
-    private Context context;
-    private Uri outputFileUri;
-    private OutputStream outStream;
-    private List<JSONObject> dataBuffer;
-
-    /**
-     * Constructs a new DataFileManager instance.
-     *
-     * @param context the application context
-     */
-    public DataFileManager(Context context) {
-        this.context = context;
-        this.dataBuffer = new ArrayList<>();
-        prepareLocalFetch();
+    public DataFileManager(Context context) throws IOException {
+        if (context == null) throw new IllegalArgumentException("context must not be null");
+        Context appContext = context.getApplicationContext();
+        File recordingDirectory = new File(appContext.getFilesDir(), "recordings");
+        String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(new Date());
+        String model = Build.MODEL == null ? "device" : Build.MODEL.replaceAll("[^A-Za-z0-9._-]", "_");
+        outputFile = new File(recordingDirectory,
+                "collection_data_" + model + "_" + timestamp + "_" + UUID.randomUUID() + ".jsonl");
     }
 
-    /**
-     * Prepares the local fetch by creating an output file URI and opening an output stream.
-     */
-    private void prepareLocalFetch() {
-        outputFileUri = getDownloadOutputFile(context);
-        if (outputFileUri != null) {
-            Log.d(TAG, "Output file created: " + outputFileUri.toString());
-            try {
-                outStream = context.getContentResolver().openOutputStream(outputFileUri, "w");
-                Log.d(TAG, "Output stream opened successfully.");
-            } catch (IOException e) {
-                Log.e(TAG, "Error opening output stream", e);
-            }
-        } else {
-            Log.e(TAG, "Failed to create output file URI.");
-        }
+    @Override
+    public synchronized void write(JSONObject record) throws IOException {
+        ensureOpen();
+        if (record == null) throw new IllegalArgumentException("record must not be null");
+        openStreamIfNeeded();
+        outputStream.write((record.toString() + "\n").getBytes(StandardCharsets.UTF_8));
     }
 
-    /**
-     * Adds a JSON record to the buffer. Flushes to file if the threshold is reached.
-     *
-     * @param record the JSON record to add
-     */
-    public void addRecord(JSONObject record) {
-        dataBuffer.add(record);
-        if (dataBuffer.size() >= FLUSH_THRESHOLD) {
-            flushBuffer();
-        }
+    @Override
+    public synchronized void flush() throws IOException {
+        if (!closed && outputStream != null) outputStream.flush();
     }
 
-    /**
-     * Flushes all buffered records to the output file and clears the buffer.
-     */
-    public void flushBuffer() {
-        if (dataBuffer.isEmpty() || outStream == null) {
-            Log.d(TAG, "Flush skipped; buffer empty or output stream is null.");
+    /** Closing is safe to repeat and always attempts to flush the last record. */
+    @Override
+    public synchronized void close() throws IOException {
+        if (closed) return;
+        if (outputStream == null) {
+            closed = true;
             return;
         }
+        IOException failure = null;
         try {
-            for (JSONObject obj : dataBuffer) {
-                String jsonLine = obj.toString() + "\n";
-                outStream.write(jsonLine.getBytes());
-            }
-            outStream.flush();
-            dataBuffer.clear();
+            outputStream.flush();
         } catch (IOException e) {
-            Log.e(TAG, "Error flushing data", e);
+            failure = e;
         }
+        try {
+            outputStream.close();
+        } catch (IOException e) {
+            if (failure == null) failure = e;
+        } finally {
+            closed = true;
+        }
+        if (failure != null) throw failure;
     }
 
-    /**
-     * Closes the output stream after flushing any remaining data.
-     * For API >= Q, it also updates the file's pending flag so it becomes visible.
-     */
-    public void close() {
-        flushBuffer();
-        if (outStream != null) {
-            try {
-                outStream.close();
-                Log.d(TAG, "Output stream closed.");
-            } catch (IOException e) {
-                Log.e(TAG, "Error closing output stream", e);
-            }
-        }
-        if (outputFileUri != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ContentValues values = new ContentValues();
-            values.put(MediaStore.Downloads.IS_PENDING, 0);
-            context.getContentResolver().update(outputFileUri, values, null, null);
-            Log.d(TAG, "Output file updated to not pending.");
-        }
+    public File getOutputFile() {
+        return outputFile;
     }
 
-    /**
-     * Creates a URI for the output file in the Downloads folder.
-     *
-     * @param context the application context
-     * @return the URI of the output file
-     */
-    private Uri getDownloadOutputFile(Context context) {
-        String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmm").format(new Date());
-        String fileName = "collection_data_" + Build.MODEL + "_" + timeStamp + ".json";
-        Log.d(TAG, "Creating output file: " + fileName);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            return getDownloadOutputFileForQ(context, fileName);
-        } else {
-            File downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-            File file = new File(downloadsDir, fileName);
-            Log.d(TAG, "Legacy output file path: " + file.getAbsolutePath());
-            return Uri.fromFile(file);
-        }
+    public synchronized boolean isClosed() {
+        return closed;
     }
 
-    /**
-     * Creates a URI for the output file in the Downloads folder for API >= Q.
-     *
-     * @param context the application context
-     * @param fileName the name of the output file
-     * @return the URI of the output file
-     */
-    @RequiresApi(api = Build.VERSION_CODES.Q)
-    private Uri getDownloadOutputFileForQ(Context context, String fileName) {
-        ContentValues values = new ContentValues();
-        values.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
-        values.put(MediaStore.Downloads.MIME_TYPE, "application/json");
-        values.put(MediaStore.Downloads.IS_PENDING, 1);
-        Uri collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
-        Uri fileUri = context.getContentResolver().insert(collection, values);
-        if (fileUri != null) {
-            Log.d(TAG, "MediaStore file created (pending): " + fileUri.toString());
-        } else {
-            Log.e(TAG, "Failed to create MediaStore file.");
+    private void ensureOpen() throws IOException {
+        if (closed) throw new IOException("Recording file is closed: " + outputFile.getName());
+    }
+
+    private void openStreamIfNeeded() throws IOException {
+        if (outputStream != null) return;
+        File directory = outputFile.getParentFile();
+        if (!directory.exists() && !directory.mkdirs()) {
+            throw new IOException("Unable to create recording directory: " + directory);
         }
-        return fileUri;
+        outputStream = new FileOutputStream(outputFile);
     }
 }

@@ -52,7 +52,7 @@ Package names alone do not establish architectural boundaries. Review actual dep
 - Treat accessibility, clear error messages, responsiveness, and long-session battery/memory/storage behavior as acceptance criteria.
 - Collect only necessary data and permissions. Make recording and upload behavior transparent, with appropriate retention, deletion, and export controls.
 - Keep credentials out of source control. Privileged server credentials must not be embedded in a distributed client. Review existing tracked configuration without reproducing secrets in logs or reports.
-- Maintain reproducible builds, compatible pinned dependencies, CI checks, release configuration, versioning, migration plans, and accurate setup documentation.
+- Maintain reproducible builds, compatible pinned dependencies, local verification, release configuration, versioning, migration plans, and accurate setup documentation.
 - Review third-party code, model, dataset, and map licensing before distribution. Do not claim release readiness without the relevant checks.
 
 ## Refactoring and verification
@@ -73,3 +73,7 @@ Apply these instructions to the whole repository. More specific directory instru
 ### Milestone delivery
 
 Continue implementation and checkpoint commits on the working branch. Open a pull request only when a coherent milestone is ready; do not create a PR for each individual edit or commit. Fetch upstream updates before planning integration, preserve project-specific behavior, and resolve divergent changes explicitly.
+
+### Early development verification
+
+During early modernization, do not add or enable hosted CI workflows. Run appropriate builds and regression tests locally and record results. Reintroduce CI only when the user requests it.

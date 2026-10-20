@@ -7,6 +7,10 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.widget.Toast;
+import android.view.View;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
@@ -63,6 +67,14 @@ public class MainActivity extends AppCompatActivity implements Observer {
 
         // Load main layout
         setContentView(R.layout.activity_main);
+        View content = findViewById(R.id.main_root);
+        ViewCompat.setOnApplyWindowInsetsListener(content, (view, insets) -> {
+            int systemTypes = WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout();
+            Insets safe = insets.getInsets(systemTypes);
+            view.setPadding(safe.left, safe.top, safe.right, safe.bottom);
+            return new WindowInsetsCompat.Builder(insets).setInsets(systemTypes, Insets.NONE).build();
+        });
+        ViewCompat.requestApplyInsets(content);
 
         // Initialize navigation controller for managing fragments
         NavHostFragment navHostFragment = (NavHostFragment) getSupportFragmentManager()

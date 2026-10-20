@@ -12,9 +12,9 @@ from alignment import piecewise_procrustes_alignment
 from plotting import plot_results
 
 def main():
-    file_list = glob.glob("./data/*.json")
+    file_list = sorted(glob.glob("./data/*.json") + glob.glob("./data/*.jsonl"))
     if not file_list:
-        print("No .json files found in ./data, exiting.")
+        print("No .json or .jsonl files found in ./data, exiting.")
         sys.exit(1)
     
     all_aligned_trimmed = []

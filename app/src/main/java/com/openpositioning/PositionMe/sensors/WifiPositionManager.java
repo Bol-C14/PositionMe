@@ -59,7 +59,7 @@ public class WifiPositionManager implements Observer {
      */
     @Override
     public void update(Object[] wifiList) {
-        this.wifiList = Stream.of(wifiList).map(o -> (Wifi) o).collect(Collectors.toList());
+        this.wifiList = Stream.of(wifiList).map(o -> ((Wifi) o).copy()).collect(Collectors.toList());
         recorder.addWifiFingerprint(this.wifiList);
         createWifiPositioningRequest();
     }
@@ -79,6 +79,9 @@ public class WifiPositionManager implements Observer {
                 @Override
                 public void onSuccess(LatLng location, int floor) {
                     PositionListener listener = positionListener;
+                    // WiFiPositioning's callback contract has no request token or observation time;
+                    // the fusion adapter timestamps this fix at callback arrival. A future M2
+                    // contract should carry the scan timestamp to reject out-of-order responses.
                     if (listener != null && location != null) listener.onPosition(location, floor);
                 }
 
@@ -90,6 +93,12 @@ public class WifiPositionManager implements Observer {
         } catch (JSONException e) {
             Log.e("jsonErrors", "Error creating json object" + e.toString());
         }
+    }
+
+    /** Requests a fresh WiFi position using the latest scan fingerprint, if one is available. */
+    public void requestCurrentPosition() {
+        if (wifiList == null || wifiList.isEmpty()) return;
+        createWifiPositioningRequest();
     }
 
     /**
@@ -143,6 +152,6 @@ public class WifiPositionManager implements Observer {
      * @return list of {@link Wifi} objects
      */
     public List<Wifi> getWifiList() {
-        return new java.util.ArrayList<>(this.wifiList);
+        return this.wifiList.stream().map(Wifi::copy).collect(Collectors.toList());
     }
 }

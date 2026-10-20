@@ -4,7 +4,7 @@ PositionMe serves commercial use, scientific research, and reliable data collect
 
 | Milestone | Acceptance |
 | --- | --- |
-| M0 — Integration and build baseline | Upstream history integrated without discarding fork positioning/calibration flows; reproducible debug build, meaningful unit tests, lint checks, CI, and explicit runtime limitations. |
+| M0 — Integration and build baseline | Upstream history integrated without discarding fork positioning/calibration flows; reproducible debug build, meaningful unit tests, lint checks and explicit runtime limitations. |
 | M1 — Architecture | Separate acquisition, estimation, recording, persistence and presentation; typed contracts, explicit ownership and lifecycle; regression fixtures protect behavior. |
 | M2 — Reliable collection | Session state machine, background behavior, durable checkpoints, recovery, versioned exports, quality metadata and synchronization. |
 | M3 — Application modernization | Incremental Kotlin/state-management/UI migration; usable permission, offline, accessibility and error flows. |
@@ -21,3 +21,9 @@ Continue commits on the working branch. Open one PR when a coherent milestone is
 3. Replace the global SensorFusion facade gradually; explicitly own session/service lifetime and UI subscriptions.
 4. Move full-fidelity collection and persistence out of Fragment polling.
 5. Remove privileged client credentials through a server authentication design.
+
+Early development: hosted CI is disabled by user instruction (2026-10-20). Local build/test/lint verification remains required. The disabled workflow is retained in docs only as a future reference.
+
+## Current checkpoint
+
+M1 positioning/recording ownership is implemented; see M1_BASELINE.md and ARCHITECTURE.md. Local verification replaces hosted CI during this phase. M2 is next; the remaining Android facade and raw-event capture limitations are recorded explicitly.

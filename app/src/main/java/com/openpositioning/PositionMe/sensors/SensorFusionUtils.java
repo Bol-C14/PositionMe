@@ -1,6 +1,7 @@
 package com.openpositioning.PositionMe.sensors;
 
 import android.os.Build;
+import android.os.SystemClock;
 import android.util.Log;
 
 import com.google.android.gms.maps.model.LatLng;
@@ -31,7 +32,8 @@ public class SensorFusionUtils {
         try {
             // 1) Basic timing info
             long now = System.currentTimeMillis();
-            record.put("timestamp", now);
+            record.put("timestamp", now); // UTC epoch milliseconds for cross-device correlation.
+            record.put("elapsedRealtimeMillis", SystemClock.elapsedRealtime()); // Monotonic capture time.
 
             // 2) GNSS (Lat/Lon)
             float[] gnss = sensorFusion.getSensorValueMap().get(SensorTypes.GNSSLATLONG);
@@ -141,6 +143,7 @@ public class SensorFusionUtils {
 
         } catch (Exception e) {
             Log.e("getAllSensorData", "Error building JSON: " + e.getMessage());
+            throw new IllegalStateException("Could not capture a complete sensor record", e);
         }
 
         return record;

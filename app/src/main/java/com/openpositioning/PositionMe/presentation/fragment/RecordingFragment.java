@@ -6,7 +6,7 @@ import android.os.Bundle;
 import android.os.CountDownTimer;
 import android.os.Handler;
 import android.os.Looper;
-import android.util.Log;
+import android.os.SystemClock;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -21,35 +21,25 @@ import androidx.preference.PreferenceManager;
 
 import com.google.android.gms.maps.model.LatLng;
 import com.openpositioning.PositionMe.R;
-import com.openpositioning.PositionMe.data.local.DataFileManager;
+import com.openpositioning.PositionMe.application.recording.RecordingSessionCollector;
 import com.openpositioning.PositionMe.sensors.SensorFusion;
 import com.openpositioning.PositionMe.sensors.SensorTypes;
-import com.openpositioning.PositionMe.sensors.Wifi;
 import com.openpositioning.PositionMe.utils.UtilFunctions;
-
-import org.json.JSONObject;
-
-import java.util.List;
 
 
 /**
- * Fragment used for collecting calibration data for indoor positioning systems.
+ * Fragment presenting the active recording session and its map/calibration controls.
  *
  * <p>This fragment allows users to:
  * <ul>
- *   <li>Toggle passive sensor data recording at fixed intervals (0.5s)</li>
  *   <li>Place and confirm calibration markers on the map</li>
  *   <li>Record labeled location data for machine learning model training</li>
  *   <li>Tag each calibration point with floor, indoor state, and building name</li>
  *   <li>Display current and average localization errors (GNSS, PDR, WiFi)</li>
  * </ul>
  *
- * <p>To use this fragment, the following references must be injected via setters:
- * {@link SensorFusion}, {@link (DataFileManager)},
- * and {@link (TrajectoryMapFragment)}.
- *
- * <p>The fragment supports both manual calibration tagging and continuous background data collection.
- * Data is written to {@link com.openpositioning.PositionMe.data.local.DataFileManager}.
+ * <p>Sensor collection and persistence belong to the recording session. This fragment renders live
+ * state and submits user actions such as test-point annotations.
  *
  * <p>This class works closely with:
  * <ul>
@@ -60,11 +50,8 @@ import java.util.List;
  *
  * @see TrajectoryMapFragment
  * @see SensorFusion
- * @see DataFileManager
  */
 public class RecordingFragment extends Fragment {
-
-    private static final String TAG = "RecordingFragment";
 
     private Button completeButton;
     private Button moreInfoButton;
@@ -74,15 +61,14 @@ public class RecordingFragment extends Fragment {
     private StatusBottomSheetFragment statusBottomSheet;
 
     private SensorFusion sensorFusion;
-    private DataFileManager dataFileManager;
+    private RecordingSessionCollector recordingSessionCollector;
     private SharedPreferences settings;
 
     private Handler refreshDataHandler;
     private CountDownTimer autoStop;
-    private Handler sensorUpdateHandler;
-    private Runnable sensorUpdateTask;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private Runnable startRecordingTask;
+    private long splitStopAtElapsedRealtime;
     private int testPointIndex;
 
     private float previousPosX = 0f;
@@ -96,9 +82,6 @@ public class RecordingFragment extends Fragment {
         }
     };
 
-    private static final long WIFI_REQUEST_INTERVAL_MS = 8000;
-    private static final long PASSIVE_COLLECTION_INTERVAL_MS = 500;
-    private long lastWifiRequestTime = 0;
 
     public RecordingFragment() {}
 
@@ -109,7 +92,6 @@ public class RecordingFragment extends Fragment {
         Context context = requireActivity();
         settings = PreferenceManager.getDefaultSharedPreferences(context);
         refreshDataHandler = new Handler();
-        dataFileManager = new DataFileManager(requireContext());
     }
 
     @Nullable
@@ -123,11 +105,16 @@ public class RecordingFragment extends Fragment {
     public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
         super.onViewCreated(view, savedInstanceState);
 
-        float[] startPosition = sensorFusion.getGNSSLatitude(false);
-        sensorFusion.setStartGNSSLatitude(startPosition);
-
-        startRecordingTask = sensorFusion::startRecording;
-        mainHandler.postDelayed(startRecordingTask, 3000);
+        recordingSessionCollector = sensorFusion.getRecordingSessionCollector();
+        if (!sensorFusion.isRecording()) {
+            splitStopAtElapsedRealtime = 0L;
+            float[] startPosition = sensorFusion.getGNSSLatitude(false);
+            sensorFusion.setStartGNSSLatitude(startPosition);
+            startRecordingTask = () -> {
+                if (!sensorFusion.isRecording()) sensorFusion.startRecording();
+            };
+            mainHandler.postDelayed(startRecordingTask, 3000);
+        }
 
         completeButton = view.findViewById(R.id.finishRecordingButton);
         moreInfoButton = view.findViewById(R.id.moreInfoButton);
@@ -153,7 +140,7 @@ public class RecordingFragment extends Fragment {
                     .commitNow();
         }
         calibrationFragment.setSensorFusion(sensorFusion);
-        calibrationFragment.setDataFileManager(dataFileManager);
+        calibrationFragment.setRecordingSessionCollector(recordingSessionCollector);
         calibrationFragment.setTrajectoryMapFragment(trajectoryMapFragment);
 
         // Show/hide bottom sheet
@@ -192,7 +179,11 @@ public class RecordingFragment extends Fragment {
         // If split trajectory timing is enabled
         if (settings.getBoolean("split_trajectory", false)) {
             long limit = settings.getInt("split_duration", 30) * 60000L;
-            autoStop = new CountDownTimer(limit, 1000) {
+            if (splitStopAtElapsedRealtime == 0L) {
+                splitStopAtElapsedRealtime = SystemClock.elapsedRealtime() + limit;
+            }
+            long remaining = Math.max(0L, splitStopAtElapsedRealtime - SystemClock.elapsedRealtime());
+            autoStop = new CountDownTimer(remaining, 1000) {
                 @Override
                 public void onTick(long millisUntilFinished) {
                     if (statusBottomSheet != null && statusBottomSheet.isAdded()) {
@@ -210,19 +201,8 @@ public class RecordingFragment extends Fragment {
                     Navigation.findNavController(getView()).navigate(action);
                 }
             }.start();
-        } else {
-            refreshDataHandler.post(refreshDataTask);
         }
 
-        sensorUpdateHandler = new Handler(Looper.getMainLooper());
-        sensorUpdateTask = new Runnable() {
-            @Override
-            public void run() {
-                collectFullSensorData();
-                sensorUpdateHandler.postDelayed(this, PASSIVE_COLLECTION_INTERVAL_MS);
-            }
-        };
-        sensorUpdateHandler.post(sensorUpdateTask);
     }
 
     private void onAddTestPoint() {
@@ -241,51 +221,8 @@ public class RecordingFragment extends Fragment {
         trajectoryMapFragment.addTestPointMarker(index, timestampMs, current);
     }
 
-    private void collectFullSensorData() {
-        try {
-            long now = System.currentTimeMillis();
-            if (now - lastWifiRequestTime > WIFI_REQUEST_INTERVAL_MS) {
-                lastWifiRequestTime = now;
-                requestWifiLocationUpdate();
-            }
-            JSONObject record = sensorFusion.getAllSensorData();
-            dataFileManager.addRecord(record);
-            Log.d(TAG, "Collected sensor data.");
-        } catch (Exception e) {
-            Log.e(TAG, "Error collecting sensor data", e);
-        }
-    }
-
-    private void requestWifiLocationUpdate() {
-        List<Wifi> wifiList = sensorFusion.getWifiList();
-        if (wifiList == null || wifiList.isEmpty()) {
-            Log.w(TAG, "No WiFi data available yet, skipping WiFi positioning request.");
-            return;
-        }
-        try {
-            JSONObject wifiAccessPoints = new JSONObject();
-            for (Wifi wifi : wifiList) {
-                wifiAccessPoints.put(String.valueOf(wifi.getBssid()), wifi.getLevel());
-            }
-            JSONObject fingerprint = new JSONObject();
-            fingerprint.put("wf", wifiAccessPoints);
-            sensorFusion.getWiFiPositioning().request(fingerprint, new com.openpositioning.PositionMe.data.remote.WiFiPositioning.VolleyCallback() {
-                @Override
-                public void onSuccess(LatLng wifiLocation, int floor) {
-                    Log.d(TAG, "WiFi Positioning Success: lat=" + wifiLocation.latitude +
-                            ", lon=" + wifiLocation.longitude + ", floor=" + floor);
-                }
-                @Override
-                public void onError(String message) {
-                    Log.e(TAG, "WiFi Positioning Failed: " + message);
-                }
-            });
-        } catch (Exception e) {
-            Log.e(TAG, "Error building WiFi fingerprint request", e);
-        }
-    }
-
     private void updateUIandPosition() {
+        if (calibrationFragment != null) calibrationFragment.updateRecordingControls();
         float[] pdrValues = sensorFusion.getSensorValueMap().get(SensorTypes.PDR);
         if (pdrValues == null) return;
 
@@ -352,9 +289,6 @@ public class RecordingFragment extends Fragment {
     @Override
     public void onDestroyView() {
         refreshDataHandler.removeCallbacks(refreshDataTask);
-        if (sensorUpdateHandler != null && sensorUpdateTask != null) {
-            sensorUpdateHandler.removeCallbacks(sensorUpdateTask);
-        }
         if (startRecordingTask != null) mainHandler.removeCallbacks(startRecordingTask);
         if (autoStop != null) autoStop.cancel();
         super.onDestroyView();
