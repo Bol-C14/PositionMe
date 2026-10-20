@@ -42,7 +42,7 @@ The script normalizes compiler trailing whitespace for repository checks.
 - Lint: zero errors, 323 warnings at the initial passing M0 check. Existing warnings are retained and must be triaged in later milestones.
 - Android emulator `Medium_Phone_API_36.1`: APK installation and cold launch PASS; Explore, Device, Settings and Replay screens opened; collection service observed after permissions granted; cold launch with location permission revoked produced no AndroidRuntime crash during the smoke check.
 - No physical device was connected. No server upload or authenticated API validation was performed. Emulator startup initially encountered a System UI ANR; subsequent app-specific checks completed without an AndroidRuntime crash. These checks do not establish device performance.
-- CI workflow runs debug/unsigned release assembly, unit tests and lint on pushes/PRs with JDK 17 and SDK 35. Remote CI status is separate from the locally executed checks.
+- CI workflow runs debug/unsigned release assembly, unit tests and lint on pushes/PRs with JDK 17 and SDK 35. SDK setup explicitly requests platform-tools: the action default includes the removed `tools` package and failed on the initial run. Remote CI status is separate from the locally executed checks.
 
 ## Limitations and release blockers
 
