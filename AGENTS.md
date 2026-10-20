@@ -68,3 +68,8 @@ Package names alone do not establish architectural boundaries. Review actual dep
 ## Working convention
 
 Apply these instructions to the whole repository. More specific directory instructions may add details while preserving the product mandate and architectural principles above. Before implementation, resolve material product assumptions from existing context or state them explicitly.
+
+
+### Milestone delivery
+
+Continue implementation and checkpoint commits on the working branch. Open a pull request only when a coherent milestone is ready; do not create a PR for each individual edit or commit. Fetch upstream updates before planning integration, preserve project-specific behavior, and resolve divergent changes explicitly.
