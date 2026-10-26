@@ -6,7 +6,7 @@ PositionMe serves commercial use, scientific research, and reliable data collect
 | --- | --- |
 | M0 — Integration and build baseline | Upstream history integrated without discarding fork positioning/calibration flows; reproducible debug build, meaningful unit tests, lint checks and explicit runtime limitations. |
 | M1 — Architecture | Separate acquisition, estimation, recording, persistence and presentation; typed contracts, explicit ownership and lifecycle; regression fixtures protect behavior. |
-| M2 — Reliable collection | Session state machine, background behavior, durable checkpoints, recovery, versioned exports, quality metadata and synchronization. |
+| M2 — Reliable collection | Session state machine, background ownership, durable local checkpoints, validated recovery, versioned exports and provenance metadata. Remote resumable synchronization remains release work. |
 | M3 — Application modernization | Incremental Kotlin/state-management/UI migration; usable permission, offline, accessibility and error flows. |
 | M4 — Release and research qualification | Fixed-trace estimator comparison, performance/battery evidence, supported-device validation, signing/distribution, privacy and licensing review. |
 
@@ -26,4 +26,4 @@ Early development: hosted CI is disabled by user instruction (2026-10-20). Local
 
 ## Current checkpoint
 
-M1 positioning/recording ownership is implemented; see M1_BASELINE.md and ARCHITECTURE.md. Local verification replaces hosted CI during this phase. M2 is next; the remaining Android facade and raw-event capture limitations are recorded explicitly.
+M2 durable local collection is implemented; see M2_BASELINE.md and ARCHITECTURE.md for verification and limits. Local verification replaces hosted CI during this phase. Durable local save, recovery and export are covered; resumable remote synchronization and device qualification remain open. M3 will modernize application state, permissions, accessibility and screen flows incrementally.

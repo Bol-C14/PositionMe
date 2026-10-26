@@ -11,6 +11,7 @@ import java.util.concurrent.CompletableFuture;
 public final class RecordingSessionCollector {
     public static final long SNAPSHOT_INTERVAL_MS = 500L;
     public static final long WIFI_REQUEST_INTERVAL_MS = 8_000L;
+    public static final long CHECKPOINT_INTERVAL_MS = 5_000L;
 
     private final SnapshotSource source;
     private final RecordSink sink;
@@ -22,6 +23,8 @@ public final class RecordingSessionCollector {
     private boolean wifiRequested;
     private long lastWifiRequestMs;
     private volatile boolean sinkClosed;
+    private long lastCheckpointMs;
+    private boolean checkpointWritten;
 
     public RecordingSessionCollector(SnapshotSource source, RecordSink sink,
                                      SessionScheduler scheduler, SessionClock clock) {
@@ -58,7 +61,7 @@ public final class RecordingSessionCollector {
         if (record == null) throw new IllegalArgumentException("record must not be null");
         final JSONObject queuedRecord;
         try {
-            queuedRecord = new JSONObject(record.toString());
+            queuedRecord = tagRecord(new JSONObject(record.toString()));
         } catch (Exception failure) {
             failAndClose(failure);
             return;
@@ -93,8 +96,25 @@ public final class RecordingSessionCollector {
         return stopped;
     }
 
+    /** Marks an interrupted owner/service lifecycle as a durable failure and finalizes best effort. */
+    public synchronized CompletableFuture<SessionStatus> fail(Throwable failure) {
+        if (failure == null) failure = new IllegalStateException("Recording owner stopped unexpectedly");
+        failAndClose(failure);
+        return stopped;
+    }
+
     public SessionStatus getStatus() {
         return status;
+    }
+
+    /** Completes after the sink has been finalized and its terminal status is durable. */
+    public CompletableFuture<SessionStatus> completion() {
+        return stopped;
+    }
+
+    public String getSessionId() {
+        return sink instanceof CheckpointingRecordSink
+                ? ((CheckpointingRecordSink) sink).getSessionId() : null;
     }
 
     private void collectSnapshot() {
@@ -108,10 +128,28 @@ public final class RecordingSessionCollector {
             }
             JSONObject snapshot = source.captureSnapshot();
             if (snapshot == null) throw new IllegalStateException("Snapshot source returned no data");
-            sink.write(snapshot);
+            sink.write(tagRecord(snapshot));
+            if (sink instanceof CheckpointingRecordSink) {
+                CheckpointingRecordSink checkpointing = (CheckpointingRecordSink) sink;
+                if (!checkpointWritten || now - lastCheckpointMs >= CHECKPOINT_INTERVAL_MS) {
+                    byte[] checkpoint = source.captureCheckpoint();
+                    if (checkpoint == null) throw new IllegalStateException("Checkpoint source returned no protobuf data");
+                    checkpointing.checkpoint(checkpoint, clock.wallTimeMillis(), now);
+                    checkpointWritten = true;
+                    lastCheckpointMs = now;
+                }
+            }
         } catch (Exception failure) {
             failAndClose(failure);
         }
+    }
+
+    private JSONObject tagRecord(JSONObject record) throws Exception {
+        if (sink instanceof CheckpointingRecordSink) {
+            String sessionId = ((CheckpointingRecordSink) sink).getSessionId();
+            if (sessionId != null) record.put("sessionId", sessionId);
+        }
+        return record;
     }
 
     private synchronized void failAndClose(Throwable failure) {
@@ -143,20 +181,40 @@ public final class RecordingSessionCollector {
             failed = failed || status.getState() == SessionState.FAILED;
             sinkClosed = true;
         }
+        if (!failed && failure == null && sink instanceof CheckpointingRecordSink) {
+            try {
+                byte[] checkpoint = source.captureCheckpoint();
+                if (checkpoint == null) throw new IllegalStateException("Checkpoint source returned no protobuf data");
+                ((CheckpointingRecordSink) sink).checkpoint(checkpoint,
+                        clock.wallTimeMillis(), clock.elapsedRealtimeMillis());
+            } catch (Exception checkpointFailure) {
+                failure = checkpointFailure;
+            }
+        }
         try {
             sink.flush();
         } catch (Exception flushFailure) {
             if (failure == null) failure = flushFailure;
         }
         try {
-            sink.close();
-        } catch (Exception closeFailure) {
-            if (failure == null) failure = closeFailure;
-        }
-        try {
             scheduler.close();
         } catch (RuntimeException schedulerFailure) {
             if (failure == null) failure = schedulerFailure;
+        }
+        if (sink instanceof CheckpointingRecordSink) {
+            CheckpointingRecordSink checkpointing = (CheckpointingRecordSink) sink;
+            try {
+                if (failure == null && !failed) checkpointing.complete();
+                else checkpointing.fail(failure);
+            } catch (Exception lifecycleFailure) {
+                if (failure == null) failure = lifecycleFailure;
+                try { checkpointing.fail(failure); } catch (Exception ignored) { }
+            }
+        }
+        try {
+            sink.close();
+        } catch (Exception closeFailure) {
+            if (failure == null) failure = closeFailure;
         }
         SessionStatus terminalStatus;
         synchronized (this) {

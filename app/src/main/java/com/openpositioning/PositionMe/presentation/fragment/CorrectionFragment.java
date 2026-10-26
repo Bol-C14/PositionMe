@@ -53,6 +53,9 @@ public class CorrectionFragment extends Fragment {
     private static float scalingRatio = 0f;
     private static LatLng start;
     private PathView pathView;
+    private TextView uploadStatusText;
+    private Button uploadButton;
+    private int viewGeneration;
 
     public CorrectionFragment() {
         // Required empty public constructor
@@ -61,17 +64,17 @@ public class CorrectionFragment extends Fragment {
     @Override
     public View onCreateView(LayoutInflater inflater, ViewGroup container,
                              Bundle savedInstanceState) {
+        final int generation = ++viewGeneration;
         AppCompatActivity activity = (AppCompatActivity) getActivity();
         if (activity != null && activity.getSupportActionBar() != null) {
             activity.getSupportActionBar().hide();
         }
         View rootView = inflater.inflate(R.layout.fragment_correction, container, false);
 
-        // Validate trajectory quality before uploading
-        validateAndUpload();
-
         //Obtain start position
         float[] startPosition = sensorFusion.getGNSSLatitude(true);
+        final LatLng mapStartPosition = startPosition == null || startPosition.length < 2
+                ? null : new LatLng(startPosition[0], startPosition[1]);
 
         // Initialize map fragment
         SupportMapFragment supportMapFragment=(SupportMapFragment)
@@ -83,6 +86,7 @@ public class CorrectionFragment extends Fragment {
         supportMapFragment.getMapAsync(new OnMapReadyCallback() {
             @Override
             public void onMapReady(GoogleMap map) {
+                if (generation != viewGeneration || getView() == null) return;
                 mMap = map;
                 mMap.setMapType(GoogleMap.MAP_TYPE_HYBRID);
                 mMap.getUiSettings().setCompassEnabled(true);
@@ -91,11 +95,11 @@ public class CorrectionFragment extends Fragment {
                 mMap.getUiSettings().setScrollGesturesEnabled(true);
 
                 // Add a marker at the start position
-                start = new LatLng(startPosition[0], startPosition[1]);
-                mMap.addMarker(new MarkerOptions().position(start).title("Start Position"));
-
-                // Calculate zoom for demonstration
-                updateCorrectionCamera();
+                start = mapStartPosition;
+                if (start != null) {
+                    mMap.addMarker(new MarkerOptions().position(start).title("Start Position"));
+                    updateCorrectionCamera();
+                }
             }
         });
 
@@ -109,6 +113,8 @@ public class CorrectionFragment extends Fragment {
         this.averageStepLengthText = view.findViewById(R.id.averageStepView);
         this.stepLengthInput = view.findViewById(R.id.inputStepLength);
         this.pathView = view.findViewById(R.id.pathView1);
+        this.uploadStatusText = view.findViewById(R.id.uploadStatusText);
+        this.uploadButton = view.findViewById(R.id.uploadRecordingButton);
         this.pathView.setTrajectory(sensorFusion.getRecordedPdrPathSnapshot());
         this.pathView.setScaleListener(scale -> {
             scalingRatio = scale;
@@ -163,6 +169,8 @@ public class CorrectionFragment extends Fragment {
             }
         });
 
+        this.uploadButton.setOnClickListener(v -> validateAndUpload());
+
     }
 
     public void setScalingRatio(float scalingRatio) {
@@ -185,12 +193,12 @@ public class CorrectionFragment extends Fragment {
      * or shows a warning dialog letting the user choose to proceed or cancel.
      */
     private void validateAndUpload() {
+        if (getView() == null || uploadButton == null || !uploadButton.isEnabled()) return;
+        if (uploadButton != null) uploadButton.setEnabled(false);
         TrajectoryValidator.ValidationResult result = sensorFusion.validateTrajectory();
 
         if (result.isClean()) {
-            // All checks passed — upload immediately
-            Log.i("CorrectionFragment", "Trajectory validation passed, uploading");
-            sensorFusion.sendTrajectoryToCloud();
+            uploadAfterConfirmation();
             return;
         }
 
@@ -203,10 +211,11 @@ public class CorrectionFragment extends Fragment {
                     .setTitle(R.string.validation_error_title)
                     .setMessage(getString(R.string.validation_error_message, summary))
                     .setPositiveButton(R.string.upload_anyway, (dialog, which) -> {
-                        sensorFusion.sendTrajectoryToCloud();
+                        uploadAfterConfirmation();
                     })
                     .setNegativeButton(R.string.cancel_upload, (dialog, which) -> {
                         dialog.dismiss();
+                        if (uploadButton != null) uploadButton.setEnabled(true);
                     })
                     .setCancelable(false)
                     .show();
@@ -216,13 +225,38 @@ public class CorrectionFragment extends Fragment {
                     .setTitle(R.string.validation_warning_title)
                     .setMessage(getString(R.string.validation_warning_message, summary))
                     .setPositiveButton(R.string.upload_anyway, (dialog, which) -> {
-                        sensorFusion.sendTrajectoryToCloud();
+                        uploadAfterConfirmation();
                     })
                     .setNegativeButton(R.string.cancel_upload, (dialog, which) -> {
                         dialog.dismiss();
+                        if (uploadButton != null) uploadButton.setEnabled(true);
                     })
                     .setCancelable(false)
                     .show();
         }
+    }
+
+    private void uploadAfterConfirmation() {
+        if (getView() == null || uploadButton == null) return;
+        try {
+            sensorFusion.sendTrajectoryToCloud();
+            if (uploadStatusText != null) uploadStatusText.setText(R.string.upload_submitted);
+        } catch (RuntimeException failure) {
+            if (uploadStatusText != null) uploadStatusText.setText(R.string.upload_failed);
+            uploadButton.setEnabled(true);
+        }
+    }
+
+    @Override
+    public void onDestroyView() {
+        viewGeneration++;
+        mMap = null;
+        button = null;
+        averageStepLengthText = null;
+        stepLengthInput = null;
+        pathView = null;
+        uploadStatusText = null;
+        uploadButton = null;
+        super.onDestroyView();
     }
 }

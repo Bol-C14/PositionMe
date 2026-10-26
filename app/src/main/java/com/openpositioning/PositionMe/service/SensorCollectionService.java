@@ -23,7 +23,7 @@ import com.openpositioning.PositionMe.sensors.SensorFusion;
  * or the screen is locked.
  *
  * <p>While this service is running, the system treats the process as a foreground process,
- * preventing it from being killed. A persistent notification is shown to the user.</p>
+ * reducing the risk of process termination. A persistent notification is shown to the user.</p>
  *
  * <p>During recording, this service also becomes the lifecycle owner for WiFi/BLE
  * scan collectors by notifying {@link SensorFusion} on start/stop. This ensures
@@ -33,12 +33,14 @@ import com.openpositioning.PositionMe.sensors.SensorFusion;
  * @see com.openpositioning.PositionMe.sensors.SensorFusion#stopRecording()
  */
 public class SensorCollectionService extends Service {
+    private static final String EXTRA_SESSION_GENERATION = "session_generation";
 
     private static final String CHANNEL_ID = "sensor_collection_channel";
     private static final int NOTIFICATION_ID = 1001;
 
     /** Tracks whether the service is currently running. */
     private static volatile boolean running = false;
+    private long sessionGeneration;
 
     @Override
     public void onCreate() {
@@ -51,7 +53,13 @@ public class SensorCollectionService extends Service {
         SensorFusion sensorFusion = SensorFusion.getInstance();
         // This service has no persisted session recovery. A sticky restart with a null Intent
         // would otherwise show a recording notification for an empty singleton after process death.
-        if (intent == null || !sensorFusion.isRecording()) {
+        if (intent == null || !intent.hasExtra(EXTRA_SESSION_GENERATION)) {
+            running = false;
+            stopSelf(startId);
+            return START_NOT_STICKY;
+        }
+        sessionGeneration = intent.getLongExtra(EXTRA_SESSION_GENERATION, -1L);
+        if (!sensorFusion.isRecordingGenerationActive(sessionGeneration)) {
             running = false;
             stopSelf(startId);
             return START_NOT_STICKY;
@@ -66,14 +74,18 @@ public class SensorCollectionService extends Service {
             } else {
                 startForeground(NOTIFICATION_ID, notification);
             }
-            sensorFusion.onCollectionServiceStarted();
+            if (!sensorFusion.onCollectionServiceStarted(sessionGeneration)) {
+                running = false;
+                stopForeground(true);
+                stopSelf(startId);
+                return START_NOT_STICKY;
+            }
             running = true;
             return START_NOT_STICKY;
         } catch (RuntimeException exception) {
             Log.e("SensorCollectionService", "Could not start foreground collection", exception);
             running = false;
-            sensorFusion.onCollectionServiceStopped();
-            sensorFusion.stopRecording();
+            sensorFusion.onCollectionServiceStopped(sessionGeneration);
             stopSelf(startId);
             return START_NOT_STICKY;
         }
@@ -82,7 +94,7 @@ public class SensorCollectionService extends Service {
     @Override
     public void onDestroy() {
         SensorFusion sensorFusion = SensorFusion.getInstance();
-        sensorFusion.onCollectionServiceStopped();
+        sensorFusion.onCollectionServiceStopped(sessionGeneration);
         running = false;
         super.onDestroy();
     }
@@ -107,8 +119,9 @@ public class SensorCollectionService extends Service {
      *
      * @param context any context (activity, application, etc.)
      */
-    public static void start(Context context) {
+    public static void start(Context context, long sessionGeneration) {
         Intent intent = new Intent(context, SensorCollectionService.class);
+        intent.putExtra(EXTRA_SESSION_GENERATION, sessionGeneration);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             context.startForegroundService(intent);
         } else {

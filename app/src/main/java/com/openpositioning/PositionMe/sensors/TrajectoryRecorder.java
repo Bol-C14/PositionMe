@@ -125,6 +125,13 @@ public class TrajectoryRecorder {
      * @param pdrProcessing PDR processor to reset at recording start
      */
     public synchronized boolean startRecording(PdrProcessing pdrProcessing) {
+        return startRecording(pdrProcessing, System.currentTimeMillis(), SystemClock.elapsedRealtime());
+    }
+
+    /** Starts a session against the same wall/elapsed clock anchors persisted in its manifest. */
+    public synchronized boolean startRecording(PdrProcessing pdrProcessing,
+                                               long sessionWallStartMillis,
+                                               long sessionElapsedStartMillis) {
         if (saveRecording) return true;
         Timer newTimer = null;
         try {
@@ -138,8 +145,8 @@ public class TrajectoryRecorder {
                         "PositionMe::Recording");
             }
 
-            long newStartTime = System.currentTimeMillis();
-            long newBootTime = SystemClock.elapsedRealtime();
+            long newStartTime = sessionWallStartMillis;
+            long newBootTime = sessionElapsedStartMillis;
             MovementSensor accel;
             MovementSensor gyro;
             MovementSensor mag;
@@ -160,6 +167,7 @@ public class TrajectoryRecorder {
                     .setAndroidVersion(Build.VERSION.RELEASE)
                     .setTrajectoryVersion(2.0f)
                     .setStartTimestamp(newStartTime)
+                    .setTrajectoryId(trajectoryId == null ? "" : trajectoryId)
                     .setAccelerometerInfo(createInfoBuilder(accel))
                     .setGyroscopeInfo(createInfoBuilder(gyro))
                     .setMagnetometerInfo(createInfoBuilder(mag))
@@ -246,6 +254,7 @@ public class TrajectoryRecorder {
     public void setTrajectoryId(String id) {
         synchronized (recorderLock) {
             this.trajectoryId = id;
+            if (trajectory != null && id != null) trajectory.setTrajectoryId(id);
         }
     }
 
@@ -520,6 +529,33 @@ public class TrajectoryRecorder {
     public Traj.Trajectory buildTrajectory() {
         synchronized (recorderLock) {
             return trajectory == null ? null : trajectory.build();
+        }
+    }
+
+    /** Returns an immutable serialized trajectory snapshot for durable checkpoints. */
+    public byte[] buildTrajectoryBytes() {
+        synchronized (recorderLock) {
+            return trajectory == null ? null : trajectory.build().toByteArray();
+        }
+    }
+
+    /** Installs a validated immutable checkpoint for explicit recovered-session inspection. */
+    public void restoreTrajectory(byte[] protobuf) throws com.google.protobuf.InvalidProtocolBufferException {
+        if (protobuf == null) throw new IllegalArgumentException("protobuf must not be null");
+        Traj.Trajectory restored = Traj.Trajectory.parseFrom(protobuf);
+        synchronized (recorderLock) {
+            if (saveRecording) throw new IllegalStateException("Cannot restore while recording is active");
+            trajectory = restored.toBuilder();
+            trajectoryId = restored.getTrajectoryId();
+        }
+    }
+
+    /** Clears an older in-memory trajectory when recovery has JSON records but no protobuf checkpoint. */
+    public void clearTrajectory() {
+        synchronized (recorderLock) {
+            if (saveRecording) throw new IllegalStateException("Cannot clear while recording is active");
+            trajectory = null;
+            trajectoryId = null;
         }
     }
 

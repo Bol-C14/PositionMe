@@ -8,6 +8,7 @@ import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
 import android.location.Location;
 import android.location.LocationListener;
+import android.os.Build;
 import android.util.Log;
 import android.os.Handler;
 import android.os.Looper;
@@ -20,8 +21,11 @@ import androidx.preference.PreferenceManager;
 import com.google.android.gms.maps.model.LatLng;
 import com.openpositioning.PositionMe.application.PositioningEngineComposition;
 import com.openpositioning.PositionMe.application.recording.RecordingSessionFactory;
+import com.openpositioning.PositionMe.application.recording.RecordingSessionFacade;
 import com.openpositioning.PositionMe.application.recording.SnapshotSource;
 import com.openpositioning.PositionMe.domain.recording.SessionState;
+import com.openpositioning.PositionMe.domain.recording.SessionStatus;
+import com.openpositioning.PositionMe.domain.recording.SessionSummary;
 import com.openpositioning.PositionMe.data.remote.FloorplanApiClient;
 import com.openpositioning.PositionMe.data.remote.WiFiPositioning;
 import com.openpositioning.PositionMe.domain.GeoPosition;
@@ -45,7 +49,10 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.CompletableFuture;
+import java.util.UUID;
 import java.util.function.BiFunction;
+import java.io.File;
 import java.io.IOException;
 
 /**
@@ -119,6 +126,13 @@ public class SensorFusion implements SensorEventListener {
     private float gnssAccuracy = Float.MAX_VALUE;
     private volatile List<Wifi> latestWifiList = new ArrayList<>();
     private volatile RecordingSessionCollector recordingSessionCollector;
+    private volatile RecordingSessionFacade recordingSessionFacade;
+    private final AtomicLong recordingGenerationCounter = new AtomicLong();
+    private volatile long activeRecordingGeneration;
+    private volatile CompletableFuture<SessionStatus> startingRecording;
+    private volatile CompletableFuture<SessionStatus> savingRecording;
+    private volatile boolean recoveryInProgress;
+    private volatile boolean recoveredTrajectoryCheckpointAvailable;
     private final Object pdrPathLock = new Object();
     private final List<float[]> recordedPdrPath = new ArrayList<>();
     //endregion
@@ -230,7 +244,7 @@ public class SensorFusion implements SensorEventListener {
                             "WiFi RTT is not supported on this device",
                             Toast.LENGTH_LONG).show());
         }
-        createRecordingSessionCollector();
+        recoverInterruptedSessionsInBackground();
         contextInitialized = true;
     }
 
@@ -328,32 +342,43 @@ public class SensorFusion implements SensorEventListener {
      * Called by {@link SensorCollectionService} when foreground collection starts.
      * Moves WiFi/BLE scanning responsibility into the service lifecycle while recording.
      */
-    public void onCollectionServiceStarted() {
+    public boolean onCollectionServiceStarted(long generation) {
+        if (generation != activeRecordingGeneration) return false;
         if (recorder == null || !recorder.isRecording()) {
             Log.w("SensorFusion", "Ignoring collection service start without an active recording");
             stopWirelessCollectors();
-            return;
+            return false;
         }
         startWirelessCollectors();
+        return generation == activeRecordingGeneration && recorder.isRecording();
     }
 
     /**
      * Called by {@link SensorCollectionService} when foreground collection stops.
      * Stops WiFi/BLE scans that were started for recording continuity.
      */
-    public void onCollectionServiceStopped() {
-        stopSessionCollector();
+    public void onCollectionServiceStopped(long generation) {
+        if (generation != activeRecordingGeneration) return;
         stopWirelessCollectors();
-        // Background collection has ended without an active foreground owner. Stop the
-        // in-memory recording so the facade cannot claim the session is still collecting.
+        // A current service disappearing while capture is live is an interruption, never success.
         if (recorder != null && recorder.isRecording()) {
+            long failedGeneration = activeRecordingGeneration;
             recorder.stopRecording();
+            RecordingSessionCollector collector = recordingSessionCollector;
+            if (collector != null) collector.fail(new IllegalStateException(
+                    "Foreground collection service stopped unexpectedly for session generation "
+                            + failedGeneration));
             publish(SensorFusionEvent.recordingLifecycle(SystemClock.elapsedRealtime(), false));
         }
     }
 
     public boolean isRecording() {
         return recorder != null && recorder.isRecording();
+    }
+
+    /** True only while the foreground service token still owns the active recording. */
+    public boolean isRecordingGenerationActive(long generation) {
+        return generation == activeRecordingGeneration && isRecording();
     }
 
     private void startWirelessCollectors() {
@@ -382,39 +407,6 @@ public class SensorFusion implements SensorEventListener {
         }
     }
 
-    private void createRecordingSessionCollector() {
-        try {
-            recordingSessionCollector = RecordingSessionFactory.create(appContext,
-                    new SnapshotSource() {
-                        @Override
-                        public JSONObject captureSnapshot() {
-                            return getAllSensorData();
-                        }
-
-                        @Override
-                        public void requestWifiUpdate() {
-                            if (wifiPositionManager != null) {
-                                wifiPositionManager.requestCurrentPosition();
-                            }
-                        }
-                    });
-        } catch (IOException exception) {
-            Log.e("SensorFusion", "Could not create sensor recording collector", exception);
-        }
-    }
-
-    private synchronized void startSessionCollector() {
-        RecordingSessionCollector collector = recordingSessionCollector;
-        if (collector == null || (collector.getStatus().getState() != SessionState.NEW
-                && collector.getStatus().getState() != SessionState.RUNNING)) {
-            createRecordingSessionCollector();
-            collector = recordingSessionCollector;
-        }
-        if (collector != null && collector.getStatus().getState() == SessionState.NEW) {
-            collector.start();
-        }
-    }
-
     private void stopSessionCollector() {
         RecordingSessionCollector collector = recordingSessionCollector;
         if (collector != null) collector.stop();
@@ -432,32 +424,116 @@ public class SensorFusion implements SensorEventListener {
      * @see SensorCollectionService
      */
     public void startRecording() {
+        startRecordingAsync();
+    }
+
+    /** Prepares durable storage off the UI thread, then begins capture under a new session UUID. */
+    public synchronized CompletableFuture<SessionStatus> startRecordingAsync() {
         if (recorder == null || eventHandler == null || pdrProcessing == null || appContext == null) {
-            Log.e("SensorFusion", "Cannot start recording before sensor context initialization");
-            showRecordingFailure();
-            return;
+            return CompletableFuture.completedFuture(SessionStatus.failed(
+                    new IllegalStateException("Sensor context is not initialized")));
         }
-        if (recorder.isRecording()) return;
-        rebuildPositioningEngine();
-        synchronized (pdrPathLock) { recordedPdrPath.clear(); }
-        if (!recorder.startRecording(pdrProcessing)) {
-            showRecordingFailure();
-            return;
+        if (recorder.isRecording()) {
+            return CompletableFuture.completedFuture(SessionStatus.of(SessionState.RUNNING));
+        }
+        if (recoveryInProgress) {
+            return CompletableFuture.completedFuture(SessionStatus.failed(
+                    new IllegalStateException("A recovered session is being loaded")));
+        }
+        if (savingRecording != null && !savingRecording.isDone()) {
+            return CompletableFuture.completedFuture(SessionStatus.failed(
+                    new IllegalStateException("Previous recording is still finalizing")));
+        }
+        if (startingRecording != null && !startingRecording.isDone()) return startingRecording;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                && appContext.checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            return CompletableFuture.completedFuture(SessionStatus.failed(
+                    new SecurityException("Location permission is required to start recording")));
         }
 
-        eventHandler.resetBootTime(recorder.getBootTime());
-        publish(SensorFusionEvent.recordingLifecycle(SystemClock.elapsedRealtime(), true));
-        stopWirelessCollectors();
-        try {
-            SensorCollectionService.start(appContext);
-            startSessionCollector();
-        } catch (RuntimeException exception) {
-            Log.e("SensorFusion", "Unable to start foreground collection service", exception);
-            publish(SensorFusionEvent.recordingLifecycle(SystemClock.elapsedRealtime(), false));
-            recorder.stopRecording();
-            stopWirelessCollectors();
-            showRecordingFailure();
-        }
+        final UUID sessionId = UUID.randomUUID();
+        final long generation = recordingGenerationCounter.incrementAndGet();
+        final long wallStartMillis = System.currentTimeMillis();
+        final long elapsedStartMillis = SystemClock.elapsedRealtime();
+        final CompletableFuture<SessionStatus> result = new CompletableFuture<>();
+        startingRecording = result;
+        SnapshotSource source = new SnapshotSource() {
+            @Override public JSONObject captureSnapshot() { return getAllSensorData(); }
+            @Override public void requestWifiUpdate() {
+                if (wifiPositionManager != null) wifiPositionManager.requestCurrentPosition();
+            }
+            @Override public byte[] captureCheckpoint() {
+                return recorder == null ? null : recorder.buildTrajectoryBytes();
+            }
+        };
+        CompletableFuture.supplyAsync(() -> {
+            try {
+                return RecordingSessionFactory.create(appContext, source, sessionId,
+                        wallStartMillis, elapsedStartMillis);
+            } catch (IOException failure) {
+                throw new java.util.concurrent.CompletionException(failure);
+            }
+        }).whenComplete((collector, preparationFailure) -> new Handler(Looper.getMainLooper()).post(() -> {
+            synchronized (SensorFusion.this) {
+                if (startingRecording == result) startingRecording = null;
+                // Keep the start transition atomic with stopAndSave and other lifecycle requests.
+            if (preparationFailure != null) {
+                Throwable cause = preparationFailure instanceof java.util.concurrent.CompletionException
+                        && preparationFailure.getCause() != null ? preparationFailure.getCause() : preparationFailure;
+                Log.e("SensorFusion", "Could not prepare durable recording session", cause);
+                showRecordingFailure();
+                result.complete(SessionStatus.failed(cause));
+                return;
+            }
+            if (recorder.isRecording()) {
+                collector.fail(new IllegalStateException("A recording started while this session was being prepared"));
+                result.complete(SessionStatus.of(SessionState.RUNNING));
+                return;
+            }
+            try {
+                recorder.setTrajectoryId(collector.getSessionId());
+                recoveredTrajectoryCheckpointAvailable = false;
+                rebuildPositioningEngine();
+                synchronized (pdrPathLock) { recordedPdrPath.clear(); }
+                if (!recorder.startRecording(pdrProcessing, wallStartMillis, elapsedStartMillis)) {
+                    collector.fail(new IllegalStateException("Protobuf trajectory recorder failed to start"));
+                    showRecordingFailure();
+                    result.complete(collector.getStatus());
+                    return;
+                }
+                activeRecordingGeneration = generation;
+                recordingSessionCollector = collector;
+                eventHandler.resetBootTime(recorder.getBootTime());
+                publish(SensorFusionEvent.recordingLifecycle(SystemClock.elapsedRealtime(), true));
+                stopWirelessCollectors();
+                SessionStatus collectorStatus = collector.start();
+                if (collectorStatus.getState() != SessionState.RUNNING) {
+                    recorder.stopRecording();
+                    collector.fail(new IllegalStateException("Durable recording worker failed to start"));
+                    result.complete(collector.getStatus());
+                    return;
+                }
+                collector.completion().thenAccept(status -> {
+                    if (status.getState() == SessionState.FAILED) {
+                        new Handler(Looper.getMainLooper()).post(() ->
+                                handleCollectorFailure(generation, collector));
+                    }
+                });
+                SensorCollectionService.start(appContext, generation);
+                result.complete(SessionStatus.of(SessionState.RUNNING));
+            } catch (RuntimeException failure) {
+                Log.e("SensorFusion", "Unable to start foreground collection", failure);
+                recorder.stopRecording();
+                collector.fail(failure);
+                stopWirelessCollectors();
+                publish(SensorFusionEvent.recordingLifecycle(SystemClock.elapsedRealtime(), false));
+                showRecordingFailure();
+                collector.stop().whenComplete((status, ignored) -> result.complete(status));
+            }
+            }
+        }));
+        return result;
     }
 
     private void showRecordingFailure() {
@@ -469,6 +545,19 @@ public class SensorFusion implements SensorEventListener {
         }
     }
 
+    /** Stops the live sensor/service owner when its durable collector fails asynchronously. */
+    private void handleCollectorFailure(long generation, RecordingSessionCollector collector) {
+        synchronized (this) {
+            if (generation != activeRecordingGeneration || collector != recordingSessionCollector
+                    || recorder == null || !recorder.isRecording()) return;
+            recorder.stopRecording();
+            activeRecordingGeneration = recordingGenerationCounter.incrementAndGet();
+        }
+        if (appContext != null) SensorCollectionService.stop(appContext);
+        stopWirelessCollectors();
+        publish(SensorFusionEvent.recordingLifecycle(SystemClock.elapsedRealtime(), false));
+    }
+
     /**
      * Disables saving sensor values to the trajectory object.
      * Also stops the foreground service since background collection is no longer needed.
@@ -476,15 +565,45 @@ public class SensorFusion implements SensorEventListener {
      * @see TrajectoryRecorder#stopRecording()
      * @see SensorCollectionService
      */
-    public void stopRecording() {
+    public synchronized CompletableFuture<SessionStatus> stopAndSave() {
+        CompletableFuture<SessionStatus> inProgressSave = savingRecording;
+        if (inProgressSave != null && !inProgressSave.isDone()) return inProgressSave;
+        CompletableFuture<SessionStatus> pendingStart = startingRecording;
+        if (pendingStart != null && !pendingStart.isDone()) {
+            return pendingStart.handle((ignored, failure) -> null).thenCompose(ignored -> stopAndSave());
+        }
         boolean wasRecording = recorder != null && recorder.isRecording();
-        stopSessionCollector();
-        if (recorder != null) recorder.stopRecording();
+        if (wasRecording && recorder != null) recorder.stopRecording();
+        // Invalidate the old service token before stopService can deliver a delayed onDestroy.
+        activeRecordingGeneration = recordingGenerationCounter.incrementAndGet();
+        RecordingSessionCollector collector = recordingSessionCollector;
+        CompletableFuture<SessionStatus> finalized = collector == null
+                ? CompletableFuture.completedFuture(SessionStatus.of(SessionState.STOPPED))
+                : collector.stop();
         if (appContext != null) SensorCollectionService.stop(appContext);
         stopWirelessCollectors();
         if (wasRecording) publish(SensorFusionEvent.recordingLifecycle(
                 SystemClock.elapsedRealtime(), false));
+        String sessionId = collector == null ? null : collector.getSessionId();
+        CompletableFuture<SessionStatus> saved = finalized.thenCompose(status -> {
+            if (status.getState() != SessionState.STOPPED || sessionId == null) {
+                return CompletableFuture.completedFuture(status);
+            }
+            return recordingFacade().exportAsync(UUID.fromString(sessionId))
+                    .handle((ignored, exportFailure) -> exportFailure == null ? status
+                            : SessionStatus.savedWithWarning(exportFailure));
+        });
+        savingRecording = saved;
+        saved.whenComplete((status, failure) -> {
+            synchronized (SensorFusion.this) {
+                if (savingRecording == saved) savingRecording = null;
+            }
+        });
+        return saved;
     }
+
+    /** Compatibility entrypoint; callers needing to navigate after finalization should await stopAndSave(). */
+    public void stopRecording() { stopAndSave(); }
 
     /**
      * Validates the current trajectory against quality thresholds before upload.
@@ -859,6 +978,99 @@ public class SensorFusion implements SensorEventListener {
 
     public RecordingSessionCollector getRecordingSessionCollector() {
         return recordingSessionCollector;
+    }
+
+    /** Returns the durable session catalog asynchronously; disk work stays off the caller thread. */
+    public CompletableFuture<List<SessionSummary>> listRecordingSessionsAsync() {
+        return recordingFacade().listSessionsAsync();
+    }
+
+    /** Explicitly finalizes one interrupted session and restores its latest trajectory checkpoint. */
+    public CompletableFuture<SessionSummary> recoverRecordingSessionAsync(UUID id) {
+        synchronized (this) {
+            if (recorder == null || recorder.isRecording() || startingRecording != null
+                    && !startingRecording.isDone() || savingRecording != null
+                    && !savingRecording.isDone() || recoveryInProgress) {
+                return failedFuture(new IllegalStateException(
+                        "Stop the active recording before restoring a recovered session"));
+            }
+            recoveryInProgress = true;
+            recoveredTrajectoryCheckpointAvailable = false;
+        }
+        RecordingSessionFacade facade = recordingFacade();
+        CompletableFuture<SessionSummary> recovery = facade.readCheckpointAsync(id).thenCompose(checkpoint -> {
+            final com.openpositioning.PositionMe.Traj.Trajectory parsedCheckpoint;
+            try {
+                // Validate before finalizing so a malformed protobuf cannot become RECOVERED.
+                parsedCheckpoint = checkpoint == null ? null
+                        : com.openpositioning.PositionMe.Traj.Trajectory.parseFrom(checkpoint);
+            } catch (Exception malformedCheckpoint) {
+                return failedFuture(malformedCheckpoint);
+            }
+            return facade.recoverSessionAsync(id).thenApply(summary -> {
+                try {
+                    if (parsedCheckpoint != null) {
+                        recorder.restoreTrajectory(checkpoint);
+                        recoveredTrajectoryCheckpointAvailable = true;
+                        synchronized (pdrPathLock) {
+                            recordedPdrPath.clear();
+                            for (com.openpositioning.PositionMe.Traj.RelativePosition point
+                                    : parsedCheckpoint.getPdrDataList()) {
+                                recordedPdrPath.add(new float[]{point.getX(), point.getY()});
+                            }
+                        }
+                    } else {
+                        recorder.clearTrajectory();
+                        recoveredTrajectoryCheckpointAvailable = false;
+                        synchronized (pdrPathLock) { recordedPdrPath.clear(); }
+                    }
+                    return summary;
+                } catch (Exception failure) {
+                    throw new java.util.concurrent.CompletionException(failure);
+                }
+            });
+        });
+        return recovery.whenComplete((summary, failure) -> {
+            synchronized (SensorFusion.this) { recoveryInProgress = false; }
+        });
+    }
+
+    public CompletableFuture<android.net.Uri> exportRecordingSessionAsync(UUID id) {
+        return recordingFacade().exportAsync(id);
+    }
+
+    /** True when the latest explicit recovery restored a validated protobuf trajectory checkpoint. */
+    public boolean hasRecoveredTrajectoryCheckpoint() {
+        return recoveredTrajectoryCheckpointAvailable;
+    }
+
+    public CompletableFuture<SessionSummary> finalizeRecoveredSessionAsync(UUID id) {
+        return recordingFacade().recoverSessionAsync(id);
+    }
+
+    private synchronized RecordingSessionFacade recordingFacade() {
+        if (recordingSessionFacade == null && appContext != null) {
+            recordingSessionFacade = new RecordingSessionFacade(appContext);
+        }
+        if (recordingSessionFacade == null) throw new IllegalStateException("Sensor context is not initialized");
+        return recordingSessionFacade;
+    }
+
+    private static <T> CompletableFuture<T> failedFuture(Throwable failure) {
+        CompletableFuture<T> future = new CompletableFuture<>();
+        future.completeExceptionally(failure);
+        return future;
+    }
+
+    private void recoverInterruptedSessionsInBackground() {
+        try {
+            recordingFacade().listSessionsAsync().exceptionally(failure -> {
+                Log.e("SensorFusion", "Cold-start session recovery scan failed", failure);
+                return java.util.Collections.emptyList();
+            });
+        } catch (RuntimeException failure) {
+            Log.e("SensorFusion", "Could not schedule cold-start session recovery", failure);
+        }
     }
 
     /** Includes asynchronous JSON persistence failure while protobuf trajectory capture continues. */

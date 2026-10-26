@@ -6,4 +6,7 @@ import org.json.JSONObject;
 public interface SnapshotSource {
     JSONObject captureSnapshot() throws Exception;
     void requestWifiUpdate() throws Exception;
+
+    /** Immutable protobuf checkpoint; null means this source has no protobuf payload. */
+    default byte[] captureCheckpoint() throws Exception { return null; }
 }

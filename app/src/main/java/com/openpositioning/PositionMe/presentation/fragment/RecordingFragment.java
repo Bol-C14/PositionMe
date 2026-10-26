@@ -1,12 +1,11 @@
 package com.openpositioning.PositionMe.presentation.fragment;
 
-import android.content.Context;
-import android.content.SharedPreferences;
+import android.Manifest;
+import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Bundle;
-import android.os.CountDownTimer;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.SystemClock;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -14,14 +13,14 @@ import android.widget.Button;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.core.content.ContextCompat;
 import androidx.fragment.app.Fragment;
-import androidx.navigation.NavDirections;
 import androidx.navigation.Navigation;
-import androidx.preference.PreferenceManager;
 
 import com.google.android.gms.maps.model.LatLng;
 import com.openpositioning.PositionMe.R;
 import com.openpositioning.PositionMe.application.recording.RecordingSessionCollector;
+import com.openpositioning.PositionMe.domain.recording.SessionState;
 import com.openpositioning.PositionMe.sensors.SensorFusion;
 import com.openpositioning.PositionMe.sensors.SensorTypes;
 import com.openpositioning.PositionMe.utils.UtilFunctions;
@@ -54,6 +53,8 @@ import com.openpositioning.PositionMe.utils.UtilFunctions;
 public class RecordingFragment extends Fragment {
 
     private Button completeButton;
+    private Button savedSessionsButton;
+    private android.widget.TextView recordingStatusText;
     private Button moreInfoButton;
 
     private TrajectoryMapFragment trajectoryMapFragment;
@@ -62,14 +63,10 @@ public class RecordingFragment extends Fragment {
 
     private SensorFusion sensorFusion;
     private RecordingSessionCollector recordingSessionCollector;
-    private SharedPreferences settings;
-
     private Handler refreshDataHandler;
-    private CountDownTimer autoStop;
-    private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private Runnable startRecordingTask;
-    private long splitStopAtElapsedRealtime;
     private int testPointIndex;
+    private int viewGeneration;
+    private boolean recordingActionPending;
 
     private float previousPosX = 0f;
     private float previousPosY = 0f;
@@ -89,8 +86,6 @@ public class RecordingFragment extends Fragment {
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         sensorFusion = SensorFusion.getInstance();
-        Context context = requireActivity();
-        settings = PreferenceManager.getDefaultSharedPreferences(context);
         refreshDataHandler = new Handler();
     }
 
@@ -104,19 +99,12 @@ public class RecordingFragment extends Fragment {
     @Override
     public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
         super.onViewCreated(view, savedInstanceState);
+        viewGeneration++;
 
         recordingSessionCollector = sensorFusion.getRecordingSessionCollector();
-        if (!sensorFusion.isRecording()) {
-            splitStopAtElapsedRealtime = 0L;
-            float[] startPosition = sensorFusion.getGNSSLatitude(false);
-            sensorFusion.setStartGNSSLatitude(startPosition);
-            startRecordingTask = () -> {
-                if (!sensorFusion.isRecording()) sensorFusion.startRecording();
-            };
-            mainHandler.postDelayed(startRecordingTask, 3000);
-        }
-
         completeButton = view.findViewById(R.id.finishRecordingButton);
+        savedSessionsButton = view.findViewById(R.id.savedSessionsButton);
+        recordingStatusText = view.findViewById(R.id.recordingStatusText);
         moreInfoButton = view.findViewById(R.id.moreInfoButton);
         view.findViewById(R.id.addTestPointButton).setOnClickListener(v -> onAddTestPoint());
 
@@ -166,42 +154,10 @@ public class RecordingFragment extends Fragment {
             }
         });
 
-        // When the finish button is clicked, stop recording and navigate to CorrectionFragment
-        completeButton.setOnClickListener(v -> {
-            if (autoStop != null) autoStop.cancel();
-            sensorFusion.stopRecording();
-
-            // use Safe Args to navigate CorrectionFragment
-            NavDirections action = RecordingFragmentDirections.actionRecordingFragmentToCorrectionFragment();
-            Navigation.findNavController(v).navigate(action);
-        });
-
-        // If split trajectory timing is enabled
-        if (settings.getBoolean("split_trajectory", false)) {
-            long limit = settings.getInt("split_duration", 30) * 60000L;
-            if (splitStopAtElapsedRealtime == 0L) {
-                splitStopAtElapsedRealtime = SystemClock.elapsedRealtime() + limit;
-            }
-            long remaining = Math.max(0L, splitStopAtElapsedRealtime - SystemClock.elapsedRealtime());
-            autoStop = new CountDownTimer(remaining, 1000) {
-                @Override
-                public void onTick(long millisUntilFinished) {
-                    if (statusBottomSheet != null && statusBottomSheet.isAdded()) {
-                        statusBottomSheet.incrementProgress();
-                    }
-                    updateUIandPosition();
-                }
-
-                @Override
-                public void onFinish() {
-                    sensorFusion.stopRecording();
-
-                    // When the timer ends, navigate to CorrectionFragment
-                    NavDirections action = RecordingFragmentDirections.actionRecordingFragmentToCorrectionFragment();
-                    Navigation.findNavController(getView()).navigate(action);
-                }
-            }.start();
-        }
+        completeButton.setOnClickListener(v -> onRecordingAction());
+        savedSessionsButton.setOnClickListener(v ->
+                Navigation.findNavController(v).navigate(R.id.filesFragment));
+        renderRecordingState(sensorFusion.isRecording());
 
     }
 
@@ -221,7 +177,125 @@ public class RecordingFragment extends Fragment {
         trajectoryMapFragment.addTestPointMarker(index, timestampMs, current);
     }
 
+    private void onRecordingAction() {
+        if (recordingActionPending) return;
+        final int generation = viewGeneration;
+        if (sensorFusion.isRecording()) {
+            recordingActionPending = true;
+            completeButton.setEnabled(false);
+            savedSessionsButton.setEnabled(false);
+            recordingStatusText.setText(R.string.saving_recording);
+            sensorFusion.stopAndSave().whenComplete((status, failure) -> mainHandler().post(() -> {
+                recordingActionPending = false;
+                if (!isCurrentView(generation)) return;
+                if (failure != null || status == null || status.isFailure()) {
+                    String detail = failure != null ? failureMessage(failure)
+                            : status == null ? "Unknown save error" : status.getFailureMessage();
+                    recordingStatusText.setText(getString(R.string.recording_save_failed, detail));
+                    completeButton.setEnabled(true);
+                    completeButton.setText(R.string.start_recording_action);
+                    savedSessionsButton.setEnabled(true);
+                    return;
+                }
+                if (status.hasWarning()) {
+                    String detail = status.getFailureMessage();
+                    String warning = getString(R.string.recording_saved_export_warning,
+                            detail == null || detail.trim().isEmpty()
+                                    ? getString(R.string.export_failed_brief) : detail);
+                    recordingStatusText.setText(warning);
+                    android.widget.Toast.makeText(requireContext(), warning,
+                            android.widget.Toast.LENGTH_LONG).show();
+                } else {
+                    recordingStatusText.setText(R.string.recording_saved);
+                }
+                View currentView = getView();
+                if (currentView == null) return;
+                Navigation.findNavController(currentView).navigate(
+                        RecordingFragmentDirections.actionRecordingFragmentToCorrectionFragment());
+            }));
+            return;
+        }
+
+        completeButton.setEnabled(false);
+        savedSessionsButton.setEnabled(false);
+        recordingStatusText.setText(R.string.starting_recording);
+        if (!hasRecordingPermissions()) {
+            recordingStatusText.setText(R.string.recording_permission_denied);
+            completeButton.setEnabled(true);
+            savedSessionsButton.setEnabled(true);
+            return;
+        }
+        float[] startPosition = sensorFusion.getGNSSLatitude(false);
+        sensorFusion.setStartGNSSLatitude(startPosition);
+        recordingActionPending = true;
+        sensorFusion.startRecordingAsync().whenComplete((status, failure) -> mainHandler().post(() -> {
+            recordingActionPending = false;
+            if (!isCurrentView(generation)) return;
+            if (failure != null || status == null || status.isFailure()) {
+                Throwable cause = unwrap(failure);
+                String detail = failure != null ? failureMessage(failure)
+                        : status == null ? "Unknown start error" : status.getFailureMessage();
+                if (cause instanceof SecurityException || (detail != null
+                        && detail.toLowerCase(java.util.Locale.ROOT).contains("permission"))) {
+                    recordingStatusText.setText(R.string.recording_permission_denied);
+                } else {
+                    recordingStatusText.setText(getString(R.string.recording_start_failed, detail));
+                }
+                completeButton.setEnabled(true);
+                completeButton.setText(R.string.start_recording_action);
+                savedSessionsButton.setEnabled(true);
+                return;
+            }
+            renderRecordingState(true);
+            savedSessionsButton.setEnabled(true);
+        }));
+    }
+
+    private void renderRecordingState(boolean recording) {
+        if (completeButton == null || recordingStatusText == null) return;
+        if (recordingActionPending) return;
+        completeButton.setEnabled(true);
+        completeButton.setText(recording ? R.string.stop_and_save : R.string.start_recording_action);
+        completeButton.setContentDescription(getString(recording
+                ? R.string.stop_and_save : R.string.start_recording_action));
+        recordingStatusText.setText(recording ? R.string.recording_started
+                : R.string.recording_not_started);
+        if (savedSessionsButton != null) savedSessionsButton.setEnabled(true);
+    }
+
+    private Handler mainHandler() {
+        return new Handler(Looper.getMainLooper());
+    }
+
+    private boolean isCurrentView(int generation) {
+        return isAdded() && generation == viewGeneration && getView() != null
+                && completeButton != null && recordingStatusText != null;
+    }
+
+    private static Throwable unwrap(Throwable failure) {
+        Throwable current = failure;
+        while (current != null && current.getCause() != null) current = current.getCause();
+        return current;
+    }
+
+    private static String failureMessage(Throwable failure) {
+        Throwable cause = unwrap(failure);
+        String message = cause == null ? null : cause.getMessage();
+        return message == null || message.trim().isEmpty() ? "Please try again." : message;
+    }
+
+    private boolean hasRecordingPermissions() {
+        boolean locationGranted = ContextCompat.checkSelfPermission(requireContext(),
+                Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+        boolean activityGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
+                || ContextCompat.checkSelfPermission(requireContext(),
+                Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED;
+        return locationGranted && activityGranted;
+    }
+
     private void updateUIandPosition() {
+        if (getView() == null || trajectoryMapFragment == null) return;
+        updateRecordingStatusFromOwner();
         if (calibrationFragment != null) calibrationFragment.updateRecordingControls();
         float[] pdrValues = sensorFusion.getSensorValueMap().get(SensorTypes.PDR);
         if (pdrValues == null) return;
@@ -271,6 +345,19 @@ public class RecordingFragment extends Fragment {
         previousPosY = pdrValues[1];
     }
 
+    private void updateRecordingStatusFromOwner() {
+        if (recordingActionPending || completeButton == null || recordingStatusText == null) return;
+        recordingSessionCollector = sensorFusion.getRecordingSessionCollector();
+        boolean recording = sensorFusion.isRecording();
+        renderRecordingState(recording);
+        if (!recording && recordingSessionCollector != null
+                && recordingSessionCollector.getStatus().getState() == SessionState.FAILED) {
+            String detail = recordingSessionCollector.getStatus().getFailureMessage();
+            recordingStatusText.setText(getString(R.string.recording_session_failed,
+                    detail == null || detail.trim().isEmpty() ? "Please check Saved sessions." : detail));
+        }
+    }
+
     @Override
     public void onPause() {
         super.onPause();
@@ -280,17 +367,22 @@ public class RecordingFragment extends Fragment {
     @Override
     public void onResume() {
         super.onResume();
-        if (!settings.getBoolean("split_trajectory", false)) {
-            refreshDataHandler.postDelayed(refreshDataTask, 500);
-        }
+        updateRecordingStatusFromOwner();
+        refreshDataHandler.postDelayed(refreshDataTask, 500);
     }
 
 
     @Override
     public void onDestroyView() {
+        viewGeneration++;
         refreshDataHandler.removeCallbacks(refreshDataTask);
-        if (startRecordingTask != null) mainHandler.removeCallbacks(startRecordingTask);
-        if (autoStop != null) autoStop.cancel();
+        completeButton = null;
+        savedSessionsButton = null;
+        recordingStatusText = null;
+        moreInfoButton = null;
+        trajectoryMapFragment = null;
+        calibrationFragment = null;
+        statusBottomSheet = null;
         super.onDestroyView();
     }
 }
