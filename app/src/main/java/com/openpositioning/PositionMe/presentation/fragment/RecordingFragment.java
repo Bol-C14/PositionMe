@@ -1,11 +1,10 @@
 package com.openpositioning.PositionMe.presentation.fragment;
 
+import android.os.Bundle;
+import android.os.Handler;
 import android.Manifest;
 import android.content.pm.PackageManager;
 import android.os.Build;
-import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -13,14 +12,16 @@ import android.widget.Button;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
-import androidx.core.content.ContextCompat;
 import androidx.fragment.app.Fragment;
+import androidx.lifecycle.ViewModelProvider;
 import androidx.navigation.Navigation;
 
 import com.google.android.gms.maps.model.LatLng;
 import com.openpositioning.PositionMe.R;
-import com.openpositioning.PositionMe.application.recording.RecordingSessionCollector;
-import com.openpositioning.PositionMe.domain.recording.SessionState;
+import com.openpositioning.PositionMe.presentation.permissions.RecordingPermissionHost;
+import com.openpositioning.PositionMe.presentation.recording.RecordingPhase;
+import com.openpositioning.PositionMe.presentation.recording.RecordingUiState;
+import com.openpositioning.PositionMe.presentation.recording.RecordingViewModel;
 import com.openpositioning.PositionMe.sensors.SensorFusion;
 import com.openpositioning.PositionMe.sensors.SensorTypes;
 import com.openpositioning.PositionMe.utils.UtilFunctions;
@@ -62,11 +63,9 @@ public class RecordingFragment extends Fragment {
     private StatusBottomSheetFragment statusBottomSheet;
 
     private SensorFusion sensorFusion;
-    private RecordingSessionCollector recordingSessionCollector;
+    private RecordingViewModel recordingViewModel;
     private Handler refreshDataHandler;
     private int testPointIndex;
-    private int viewGeneration;
-    private boolean recordingActionPending;
 
     private float previousPosX = 0f;
     private float previousPosY = 0f;
@@ -99,13 +98,19 @@ public class RecordingFragment extends Fragment {
     @Override
     public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
         super.onViewCreated(view, savedInstanceState);
-        viewGeneration++;
-
-        recordingSessionCollector = sensorFusion.getRecordingSessionCollector();
+        recordingViewModel = new ViewModelProvider(requireActivity()).get(RecordingViewModel.class);
         completeButton = view.findViewById(R.id.finishRecordingButton);
         savedSessionsButton = view.findViewById(R.id.savedSessionsButton);
         recordingStatusText = view.findViewById(R.id.recordingStatusText);
         moreInfoButton = view.findViewById(R.id.moreInfoButton);
+        View manageRecordingAccessButton = view.findViewById(R.id.manageRecordingAccessButton);
+        if (manageRecordingAccessButton != null) {
+            manageRecordingAccessButton.setOnClickListener(v -> {
+                if (requireActivity() instanceof RecordingPermissionHost) {
+                    ((RecordingPermissionHost) requireActivity()).openRecordingPermissionSettings();
+                }
+            });
+        }
         view.findViewById(R.id.addTestPointButton).setOnClickListener(v -> onAddTestPoint());
 
         trajectoryMapFragment = (TrajectoryMapFragment) getChildFragmentManager()
@@ -128,7 +133,7 @@ public class RecordingFragment extends Fragment {
                     .commitNow();
         }
         calibrationFragment.setSensorFusion(sensorFusion);
-        calibrationFragment.setRecordingSessionCollector(recordingSessionCollector);
+        calibrationFragment.setRecordingViewModel(recordingViewModel);
         calibrationFragment.setTrajectoryMapFragment(trajectoryMapFragment);
 
         // Show/hide bottom sheet
@@ -157,7 +162,7 @@ public class RecordingFragment extends Fragment {
         completeButton.setOnClickListener(v -> onRecordingAction());
         savedSessionsButton.setOnClickListener(v ->
                 Navigation.findNavController(v).navigate(R.id.filesFragment));
-        renderRecordingState(sensorFusion.isRecording());
+        recordingViewModel.getState().observe(getViewLifecycleOwner(), this::renderRecordingState);
 
     }
 
@@ -178,125 +183,73 @@ public class RecordingFragment extends Fragment {
     }
 
     private void onRecordingAction() {
-        if (recordingActionPending) return;
-        final int generation = viewGeneration;
-        if (sensorFusion.isRecording()) {
-            recordingActionPending = true;
-            completeButton.setEnabled(false);
-            savedSessionsButton.setEnabled(false);
-            recordingStatusText.setText(R.string.saving_recording);
-            sensorFusion.stopAndSave().whenComplete((status, failure) -> mainHandler().post(() -> {
-                recordingActionPending = false;
-                if (!isCurrentView(generation)) return;
-                if (failure != null || status == null || status.isFailure()) {
-                    String detail = failure != null ? failureMessage(failure)
-                            : status == null ? "Unknown save error" : status.getFailureMessage();
-                    recordingStatusText.setText(getString(R.string.recording_save_failed, detail));
-                    completeButton.setEnabled(true);
-                    completeButton.setText(R.string.start_recording_action);
-                    savedSessionsButton.setEnabled(true);
-                    return;
-                }
-                if (status.hasWarning()) {
-                    String detail = status.getFailureMessage();
-                    String warning = getString(R.string.recording_saved_export_warning,
-                            detail == null || detail.trim().isEmpty()
-                                    ? getString(R.string.export_failed_brief) : detail);
-                    recordingStatusText.setText(warning);
-                    android.widget.Toast.makeText(requireContext(), warning,
-                            android.widget.Toast.LENGTH_LONG).show();
-                } else {
-                    recordingStatusText.setText(R.string.recording_saved);
-                }
-                View currentView = getView();
-                if (currentView == null) return;
-                Navigation.findNavController(currentView).navigate(
-                        RecordingFragmentDirections.actionRecordingFragmentToCorrectionFragment());
-            }));
+        RecordingUiState state = recordingViewModel.getState().getValue();
+        if (state != null && state.getPhase() == RecordingPhase.RECORDING) {
+            recordingViewModel.stop();
             return;
         }
-
-        completeButton.setEnabled(false);
-        savedSessionsButton.setEnabled(false);
-        recordingStatusText.setText(R.string.starting_recording);
         if (!hasRecordingPermissions()) {
-            recordingStatusText.setText(R.string.recording_permission_denied);
-            completeButton.setEnabled(true);
-            savedSessionsButton.setEnabled(true);
+            recordingViewModel.permissionDenied();
+            if (requireActivity() instanceof RecordingPermissionHost) {
+                ((RecordingPermissionHost) requireActivity()).requestRecordingPermissions();
+            }
             return;
         }
-        float[] startPosition = sensorFusion.getGNSSLatitude(false);
-        sensorFusion.setStartGNSSLatitude(startPosition);
-        recordingActionPending = true;
-        sensorFusion.startRecordingAsync().whenComplete((status, failure) -> mainHandler().post(() -> {
-            recordingActionPending = false;
-            if (!isCurrentView(generation)) return;
-            if (failure != null || status == null || status.isFailure()) {
-                Throwable cause = unwrap(failure);
-                String detail = failure != null ? failureMessage(failure)
-                        : status == null ? "Unknown start error" : status.getFailureMessage();
-                if (cause instanceof SecurityException || (detail != null
-                        && detail.toLowerCase(java.util.Locale.ROOT).contains("permission"))) {
-                    recordingStatusText.setText(R.string.recording_permission_denied);
-                } else {
-                    recordingStatusText.setText(getString(R.string.recording_start_failed, detail));
-                }
-                completeButton.setEnabled(true);
-                completeButton.setText(R.string.start_recording_action);
-                savedSessionsButton.setEnabled(true);
-                return;
-            }
-            renderRecordingState(true);
-            savedSessionsButton.setEnabled(true);
-        }));
+        recordingViewModel.start();
     }
 
-    private void renderRecordingState(boolean recording) {
+    private void renderRecordingState(RecordingUiState state) {
         if (completeButton == null || recordingStatusText == null) return;
-        if (recordingActionPending) return;
-        completeButton.setEnabled(true);
-        completeButton.setText(recording ? R.string.stop_and_save : R.string.start_recording_action);
-        completeButton.setContentDescription(getString(recording
+        RecordingPhase phase = state.getPhase();
+        boolean busy = state.isBusy();
+        completeButton.setEnabled(!busy);
+        completeButton.setText(phase == RecordingPhase.RECORDING
+                ? R.string.stop_and_save : R.string.start_recording_action);
+        completeButton.setContentDescription(getString(phase == RecordingPhase.RECORDING
                 ? R.string.stop_and_save : R.string.start_recording_action));
-        recordingStatusText.setText(recording ? R.string.recording_started
-                : R.string.recording_not_started);
-        if (savedSessionsButton != null) savedSessionsButton.setEnabled(true);
+        if (savedSessionsButton != null) savedSessionsButton.setEnabled(!busy);
+        switch (phase) {
+            case STARTING: recordingStatusText.setText(R.string.m3_recording_starting); break;
+            case RECORDING: recordingStatusText.setText(R.string.m3_recording_active); break;
+            case SAVING: recordingStatusText.setText(R.string.m3_recording_saving); break;
+            case SAVED: recordingStatusText.setText(R.string.m3_recording_saved); break;
+            case WARNING:
+                recordingStatusText.setText(state.isPermissionRequired()
+                        ? getString(R.string.m3_recording_permission_retry)
+                        : getString(R.string.m3_recording_export_warning, detailOrRetry(state.getDetail())));
+                break;
+            case ERROR:
+                recordingStatusText.setText(getString(R.string.m3_recording_error, detailOrRetry(state.getDetail())));
+                break;
+            case IDLE:
+                recordingStatusText.setText(state.isPermissionReady()
+                        ? R.string.m3_recording_permission_ready : R.string.m3_recording_idle);
+                break;
+            default: recordingStatusText.setText(R.string.m3_recording_idle); break;
+        }
+        if (state.getEffect() == RecordingUiState.Effect.OPEN_CORRECTION) {
+            long effectId = state.getEffectId();
+            Navigation.findNavController(requireView()).navigate(
+                    RecordingFragmentDirections.actionRecordingFragmentToCorrectionFragment());
+            recordingViewModel.consumeEffect(effectId);
+        }
     }
 
-    private Handler mainHandler() {
-        return new Handler(Looper.getMainLooper());
-    }
-
-    private boolean isCurrentView(int generation) {
-        return isAdded() && generation == viewGeneration && getView() != null
-                && completeButton != null && recordingStatusText != null;
-    }
-
-    private static Throwable unwrap(Throwable failure) {
-        Throwable current = failure;
-        while (current != null && current.getCause() != null) current = current.getCause();
-        return current;
-    }
-
-    private static String failureMessage(Throwable failure) {
-        Throwable cause = unwrap(failure);
-        String message = cause == null ? null : cause.getMessage();
-        return message == null || message.trim().isEmpty() ? "Please try again." : message;
+    private String detailOrRetry(String detail) {
+        return detail == null || detail.trim().isEmpty() ? getString(R.string.m3_recording_retry) : detail;
     }
 
     private boolean hasRecordingPermissions() {
-        boolean locationGranted = ContextCompat.checkSelfPermission(requireContext(),
+        boolean locationGranted = androidx.core.content.ContextCompat.checkSelfPermission(requireContext(),
                 Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
         boolean activityGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
-                || ContextCompat.checkSelfPermission(requireContext(),
+                || androidx.core.content.ContextCompat.checkSelfPermission(requireContext(),
                 Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED;
         return locationGranted && activityGranted;
     }
 
     private void updateUIandPosition() {
         if (getView() == null || trajectoryMapFragment == null) return;
-        updateRecordingStatusFromOwner();
-        if (calibrationFragment != null) calibrationFragment.updateRecordingControls();
         float[] pdrValues = sensorFusion.getSensorValueMap().get(SensorTypes.PDR);
         if (pdrValues == null) return;
 
@@ -345,19 +298,6 @@ public class RecordingFragment extends Fragment {
         previousPosY = pdrValues[1];
     }
 
-    private void updateRecordingStatusFromOwner() {
-        if (recordingActionPending || completeButton == null || recordingStatusText == null) return;
-        recordingSessionCollector = sensorFusion.getRecordingSessionCollector();
-        boolean recording = sensorFusion.isRecording();
-        renderRecordingState(recording);
-        if (!recording && recordingSessionCollector != null
-                && recordingSessionCollector.getStatus().getState() == SessionState.FAILED) {
-            String detail = recordingSessionCollector.getStatus().getFailureMessage();
-            recordingStatusText.setText(getString(R.string.recording_session_failed,
-                    detail == null || detail.trim().isEmpty() ? "Please check Saved sessions." : detail));
-        }
-    }
-
     @Override
     public void onPause() {
         super.onPause();
@@ -367,14 +307,16 @@ public class RecordingFragment extends Fragment {
     @Override
     public void onResume() {
         super.onResume();
-        updateRecordingStatusFromOwner();
+        RecordingUiState state = recordingViewModel == null ? null : recordingViewModel.getState().getValue();
+        if (state != null && state.isPermissionRequired() && hasRecordingPermissions()) {
+            recordingViewModel.permissionGranted();
+        }
         refreshDataHandler.postDelayed(refreshDataTask, 500);
     }
 
 
     @Override
     public void onDestroyView() {
-        viewGeneration++;
         refreshDataHandler.removeCallbacks(refreshDataTask);
         completeButton = null;
         savedSessionsButton = null;

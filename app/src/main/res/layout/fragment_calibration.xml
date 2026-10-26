@@ -23,6 +23,7 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:hint="@string/building_name_hint"
+            android:minHeight="48dp"
             android:textSize="16sp"
             android:inputType="text"
             android:padding="8dp"
@@ -30,8 +31,10 @@
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/startRecordingButton"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minHeight="48dp"
+            android:minWidth="48dp"
             android:layout_marginStart="8dp"
             android:contentDescription="@string/start_passive_recording"
             app:icon="@drawable/ic_file_arrow_down_alt_svgrepo_com"
@@ -55,16 +58,18 @@
 
         <Spinner
             android:id="@+id/floorSpinner"
+            android:contentDescription="@string/floor_level"
             android:layout_width="0dp"
-            android:layout_height="40dp"
+            android:layout_height="48dp"
             android:layout_weight="1"
             android:entries="@array/floor_levels"
             android:prompt="@string/floor_level" />
 
         <Spinner
             android:id="@+id/indoorStateSpinner"
+            android:contentDescription="@string/indoor_state"
             android:layout_width="0dp"
-            android:layout_height="40dp"
+            android:layout_height="48dp"
             android:layout_weight="1"
             android:layout_marginStart="8dp"
             android:entries="@array/indoor_states"
@@ -83,7 +88,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="0.8"
-            android:text="Add Tag"
+            android:text="@string/calibration_add_tag"
             android:enabled="false"
             app:icon="@drawable/ic_baseline_add_location_24"
             app:iconTint="@android:color/white"
@@ -109,7 +114,7 @@
         android:id="@+id/errorTextView"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Current Errors: Set first tag to calculate..."
+        android:text="@string/calibration_error_initial"
         android:textColor="@android:color/black"
         android:textStyle="bold"
         android:layout_marginTop="8dp" />

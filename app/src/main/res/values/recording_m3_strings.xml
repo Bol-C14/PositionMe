@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="m3_recording_idle">Ready to record. Start when you are ready.</string>
+    <string name="m3_recording_starting">Preparing recording…</string>
+    <string name="m3_recording_active">Recording sensor data.</string>
+    <string name="m3_recording_saving">Saving recording…</string>
+    <string name="m3_recording_saved">Recording saved.</string>
+    <string name="m3_recording_permission_retry">Recording permission is needed. Grant access, then tap Start recording to retry.</string>
+    <string name="m3_recording_permission_ready">Recording access is ready. Tap Start recording when you are ready.</string>
+    <string name="m3_recording_export_warning">Recording saved privately, but export needs attention: %1$s</string>
+    <string name="m3_recording_error">Recording could not finish: %1$s</string>
+    <string name="m3_recording_retry">Please try again.</string>
+    <string name="m3_recording_starting_action">Preparing recording</string>
+    <string name="m3_recording_saving_action">Saving recording</string>
+</resources>

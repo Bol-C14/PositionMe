@@ -1,4 +1,4 @@
-# PositionMe architecture after M2
+# PositionMe architecture after M3
 
 ## Ownership and dependency direction
 
@@ -39,6 +39,18 @@ The foreground service supports live background collection and uses a session ge
 Cold-start recovery skips locked live writers. It validates the committed JSON prefix and referenced checkpoint, marks abandoned OPEN sessions INTERRUPTED, and trims only uncommitted suffix bytes with a recorded loss report. Invalid committed data is marked CORRUPT and preserved. User recovery finalizes retained data as RECOVERED; it never resumes sensors or fabricates continuity. Valid JSON-only sessions remain recoverable/exportable even without a protobuf checkpoint. Failed sessions can be recovered only after the same validation. Five seconds is a checkpoint scheduling target, not a guaranteed loss bound under stalls, storage failure or process termination.
 
 Stop freezes protobuf acquisition before the collector drains accepted writes, captures its final checkpoint and finalizes the private session. A Downloads export failure leaves private SAVED data intact with a separate retry status. Export bundles contain the manifest, exactly the validated committed JSONL prefix and only its referenced protobuf checkpoint. Temporary files, locks and orphan generations are excluded. Android 10+ publishes through pending MediaStore Downloads entries; Android 9 uses app-specific Downloads. Existing completed exports survive failed retries. Upload remains an explicit user action.
+
+## Lifecycle-owned presentation state
+
+`RecordingController` is a pure synchronized state machine behind a narrow `RecordingCommands` boundary. `RecordingViewModel` bridges immutable state through LiveData; the activity-scoped instance is shared by the main recording screen and its calibration child. Fragments observe with their view lifecycle and submit commands. STARTING and SAVING disable duplicate commands across both controls. Navigation is an identified consumable effect so a recreated view does not repeat an acknowledged transition. Recording lifecycle no longer depends on the map refresh timer.
+
+The SensorFusion adapter subscribes before reading a `RecordingOperationSnapshot`, reconnects a new screen owner to pending start/save futures, and ignores historic successful completion or callbacks from replaced/closed collectors. The command future remains authoritative through startup and durable finalization. Observer subscriptions close when the ViewModel is cleared. This reattachment covers work in the current process; process death still follows M2 interruption/recovery semantics.
+
+`PermissionPolicy` maps required and optional permissions without Android dependencies. MainActivity requests access only from explicit recording/manage actions, requests coarse+fine together for Android 12 precise-location upgrades, offers Settings after persistent denial, and rechecks access on resume without prompting. Optional radio/notification permissions remain separate from recording eligibility. NavigationUI manages bottom-tab state; lifecycle back handling tells the user when work continues in the background.
+
+`FilesViewModel` owns local catalog generations, in-flight recovery/export and immutable outcomes behind injected `LocalSessionCommands`. Late load responses are ignored and failed actions retain an actionable error. Remote catalog loading is explicit and typed, with loading/empty/failure states, cancellation and generation checks. Local sessions remain usable without remote catalog access or recording permissions. Remote download adapters dispose their file watchers when the view is destroyed. Server upload observers support removal and no longer inspect presentation classes.
+
+Correction accepts only finite positive decimal step lengths against a valid original baseline. Every preview references the original measurement; preview state survives view recreation through saved instance state. It changes the drawing only, preserving recorded data and uploaded observations. The decorative path sits below the controls and does not take keyboard/accessibility focus.
 
 ## Remaining boundaries
 

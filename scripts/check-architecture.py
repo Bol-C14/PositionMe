@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check M1 dependency boundaries without requiring Android tooling."""
+"""Check established domain, sensor and remote-adapter boundaries without Android tooling."""
 from pathlib import Path
 import re
 import sys
@@ -17,7 +17,11 @@ for source in (root / "sensors").rglob("*.java"):
     for dependency in re.findall(r"^import\s+([^;]+);", source.read_text(), re.M):
         if dependency.startswith("com.openpositioning.PositionMe.presentation.") or dependency.endswith(".PathView"):
             violations.append(f"{source.relative_to(root)} imports {dependency}")
+for source in (root / "data/remote").rglob("*.java"):
+    for dependency in re.findall(r"^import\s+([^;]+);", source.read_text(), re.M):
+        if dependency.startswith("com.openpositioning.PositionMe.presentation."):
+            violations.append(f"{source.relative_to(root)} imports {dependency}")
 if violations:
     print("Architecture boundary violations:\n" + "\n".join(violations))
     sys.exit(1)
-print("Domain/platform and sensor/presentation boundaries: PASS")
+print("Domain, sensor and remote/presentation boundaries: PASS")

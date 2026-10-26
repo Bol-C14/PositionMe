@@ -64,8 +64,13 @@ dependencies {
     implementation "org.ejml:ejml-simple:0.41"
 
 
+    // Explicit lifecycle ownership for screen state, matching the existing resolved baseline.
+    implementation 'androidx.lifecycle:lifecycle-viewmodel:2.6.2'
+    implementation 'androidx.lifecycle:lifecycle-livedata:2.6.2'
+
     // Material Components (Material 3 support is in 1.12.0+)
     testImplementation 'junit:junit:4.13.2'
+    testImplementation 'androidx.arch.core:core-testing:2.2.0'
     testImplementation 'org.json:json:20240303'
     androidTestImplementation 'androidx.test.ext:junit:1.2.1'
     androidTestImplementation 'androidx.test.espresso:espresso-core:3.6.1'

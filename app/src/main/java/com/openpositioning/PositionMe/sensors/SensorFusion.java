@@ -36,6 +36,7 @@ import com.openpositioning.PositionMe.domain.StepObservation;
 import com.openpositioning.PositionMe.domain.WifiObservation;
 import org.json.JSONObject;
 import com.openpositioning.PositionMe.application.recording.RecordingSessionCollector;
+import com.openpositioning.PositionMe.application.recording.RecordingOperationSnapshot;
 import com.openpositioning.PositionMe.service.SensorCollectionService;
 import com.openpositioning.PositionMe.utils.PdrProcessing;
 import com.openpositioning.PositionMe.utils.TrajectoryValidator;
@@ -831,6 +832,13 @@ public class SensorFusion implements SensorEventListener {
         recorder.getServerCommunications().registerObserver(observer);
     }
 
+    /** Unregisters a server-update observer registered by the caller. */
+    public void unregisterForServerUpdate(Observer observer) {
+        if (recorder != null && recorder.getServerCommunications() != null) {
+            recorder.getServerCommunications().unregisterObserver(observer);
+        }
+    }
+
     /**
      * Get the estimated elevation value in meters calculated by the PDR class.
      *
@@ -1077,6 +1085,14 @@ public class SensorFusion implements SensorEventListener {
     public SensorFusionRecordingStatus getRecordingStatus() {
         RecordingSessionCollector collector = recordingSessionCollector;
         return new SensorFusionRecordingStatus(isRecording(),
+                collector == null ? null : collector.getStatus());
+    }
+
+    /** Snapshot used by a recreated presentation owner to reattach to in-flight session work. */
+    public synchronized RecordingOperationSnapshot getRecordingOperationSnapshot() {
+        RecordingSessionCollector collector = recordingSessionCollector;
+        return new RecordingOperationSnapshot(isRecording(),
+                startingRecording, savingRecording, collector,
                 collector == null ? null : collector.getStatus());
     }
 
