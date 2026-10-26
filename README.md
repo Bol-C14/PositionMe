@@ -42,7 +42,7 @@ A debug build can compile with empty credentials. A working Google Maps key is n
 
 The optional Wi-Fi ML predictor expects `app/src/main/assets/tf_model.tflite` and `bssid2idx.json`; these model assets are not included. Do not assume offline ML prediction is available in the baseline.
 
-See [the architecture](docs/ARCHITECTURE.md), [M2 verification](docs/M2_BASELINE.md), [M1 verification](docs/M1_BASELINE.md), [the roadmap](docs/ROADMAP.md) and [M0 verification](docs/M0_BASELINE.md) for integration decisions, checks, and remaining device validation.
+See [the architecture](docs/ARCHITECTURE.md), [M3 verification](docs/M3_BASELINE.md), [M2 verification](docs/M2_BASELINE.md), [M1 verification](docs/M1_BASELINE.md), [the roadmap](docs/ROADMAP.md) and [M0 verification](docs/M0_BASELINE.md) for integration decisions, checks, and remaining device validation.
 
 ------------------|------------------------|
 | Android Studio   | Arctic Fox (2020.3.1) or newer |

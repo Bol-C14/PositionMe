@@ -1,6 +1,9 @@
 package com.openpositioning.PositionMe.presentation.fragment;
 
 import android.os.Bundle;
+import android.Manifest;
+import android.content.pm.PackageManager;
+import android.os.Build;
 import android.text.TextUtils;
 import android.util.Log;
 import android.view.LayoutInflater;
@@ -15,6 +18,7 @@ import android.widget.Toast;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.fragment.app.Fragment;
+import androidx.lifecycle.ViewModelProvider;
 
 import com.google.android.gms.maps.GoogleMap;
 import com.google.android.gms.maps.model.LatLng;
@@ -24,7 +28,10 @@ import com.google.android.material.button.MaterialButton;
 import com.openpositioning.PositionMe.R;
 import com.openpositioning.PositionMe.application.recording.RecordingSessionCollector;
 import com.openpositioning.PositionMe.domain.recording.SessionState;
-import com.openpositioning.PositionMe.domain.recording.SessionStatus;
+import com.openpositioning.PositionMe.presentation.permissions.RecordingPermissionHost;
+import com.openpositioning.PositionMe.presentation.recording.RecordingPhase;
+import com.openpositioning.PositionMe.presentation.recording.RecordingUiState;
+import com.openpositioning.PositionMe.presentation.recording.RecordingViewModel;
 import com.openpositioning.PositionMe.sensors.SensorFusion;
 import com.openpositioning.PositionMe.utils.CalibrationUtils;
 
@@ -58,6 +65,7 @@ public class CalibrationFragment extends Fragment {
     // Data references
     private SensorFusion sensorFusion;
     private RecordingSessionCollector recordingSessionCollector;
+    private RecordingViewModel recordingViewModel;
     private TrajectoryMapFragment trajectoryMapFragment;
 
     // Marker & calibration state
@@ -69,9 +77,6 @@ public class CalibrationFragment extends Fragment {
 
     // Count of confirmed calibration annotations.
     private int recordCount = 0;
-    private int viewGeneration;
-    private boolean sessionActionPending;
-    private boolean pendingActionStopsRecording;
 
     // Error computation and tracking
     private double totalPdrError = 0;
@@ -92,9 +97,11 @@ public class CalibrationFragment extends Fragment {
      */
     public void setSensorFusion(SensorFusion sensorFusion) {
         this.sensorFusion = sensorFusion;
+        RecordingUiState state = recordingViewModel == null ? null : recordingViewModel.getState().getValue();
+        if (state != null) renderRecordingControls(state);
     }
-    public void setRecordingSessionCollector(RecordingSessionCollector collector) {
-        this.recordingSessionCollector = collector;
+    public void setRecordingViewModel(RecordingViewModel viewModel) {
+        this.recordingViewModel = viewModel;
     }
     public void setTrajectoryMapFragment(TrajectoryMapFragment mapFragment) {
         this.trajectoryMapFragment = mapFragment;
@@ -105,8 +112,10 @@ public class CalibrationFragment extends Fragment {
     public View onCreateView(@NonNull LayoutInflater inflater,
                              @Nullable ViewGroup container,
                              @Nullable Bundle savedInstanceState) {
-        viewGeneration++;
         View view = inflater.inflate(R.layout.fragment_calibration, container, false);
+        if (recordingViewModel == null) {
+            recordingViewModel = new ViewModelProvider(requireActivity()).get(RecordingViewModel.class);
+        }
 
         // Initialize UI references
         buildingNameEditText   = view.findViewById(R.id.buildingNameEditText);
@@ -142,9 +151,13 @@ public class CalibrationFragment extends Fragment {
 
         // Show initial count = 0
         updatePointCountDisplay();
-        updateRecordingControls();
-
         return view;
+    }
+
+    @Override
+    public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
+        super.onViewCreated(view, savedInstanceState);
+        recordingViewModel.getState().observe(getViewLifecycleOwner(), this::renderRecordingControls);
     }
 
     /**
@@ -374,60 +387,32 @@ public class CalibrationFragment extends Fragment {
 
 
     private void toggleSessionRecording() {
-        if (sensorFusion == null || sessionActionPending) return;
-        final int generation = viewGeneration;
-        pendingActionStopsRecording = sensorFusion.isRecording();
-        sessionActionPending = true;
-        updateRecordingControls();
-        if (pendingActionStopsRecording) {
-            sensorFusion.stopAndSave().whenComplete((status, failure) ->
-                    new android.os.Handler(android.os.Looper.getMainLooper()).post(() ->
-                            finishSessionAction(generation, status, failure)));
+        if (sensorFusion == null || recordingViewModel == null) return;
+        RecordingUiState state = recordingViewModel.getState().getValue();
+        if (state != null && state.getPhase() == RecordingPhase.RECORDING) {
+            recordingViewModel.stop();
+        } else if (!hasRecordingPermissions()) {
+            recordingViewModel.permissionDenied();
+            if (requireActivity() instanceof RecordingPermissionHost) {
+                ((RecordingPermissionHost) requireActivity()).requestRecordingPermissions();
+            }
         } else {
-            sensorFusion.setStartGNSSLatitude(sensorFusion.getGNSSLatitude(false));
-            sensorFusion.startRecordingAsync().whenComplete((status, failure) ->
-                    new android.os.Handler(android.os.Looper.getMainLooper()).post(() ->
-                            finishSessionAction(generation, status, failure)));
+            recordingViewModel.start();
         }
     }
 
-    private void finishSessionAction(int generation, SessionStatus status, Throwable failure) {
-        sessionActionPending = false;
-        recordingSessionCollector = sensorFusion == null ? null
-                : sensorFusion.getRecordingSessionCollector();
-        if (generation != viewGeneration || getView() == null) return;
-        if (failure != null || status == null || status.isFailure()) {
-            String detail = failure != null ? failure.getMessage()
-                    : status == null ? null : status.getFailureMessage();
-            int message = pendingActionStopsRecording
-                    ? R.string.recording_save_failed : R.string.recording_start_failed;
-            Toast.makeText(requireContext(), getString(message,
-                    detail == null || detail.trim().isEmpty() ? "Please try again." : detail),
-                    Toast.LENGTH_LONG).show();
-        } else if (pendingActionStopsRecording && status.hasWarning()) {
-            Toast.makeText(requireContext(), getString(R.string.recording_saved_export_warning,
-                    status.getFailureMessage()), Toast.LENGTH_LONG).show();
-        } else {
-            Toast.makeText(requireContext(), pendingActionStopsRecording
-                    ? R.string.calibration_recording_saved : R.string.recording_started,
-                    Toast.LENGTH_SHORT).show();
-        }
-        updateRecordingControls();
-    }
-
-    /** Updates controls from the session owner without collecting or persisting records here. */
-    public void updateRecordingControls() {
+    /** Render both the shared application state and the durable writer's defensive annotation gate. */
+    private void renderRecordingControls(RecordingUiState state) {
         if (calibrationButton == null || startRecordingButton == null) return;
-        recordingSessionCollector = sensorFusion == null ? null
-                : sensorFusion.getRecordingSessionCollector();
-        boolean running = sensorFusion != null && sensorFusion.isRecording()
-                && recordingSessionCollector != null
+        boolean running = state.canAnnotate() && sensorFusion != null && sensorFusion.isRecording()
+                && (recordingSessionCollector = sensorFusion.getRecordingSessionCollector()) != null
                 && recordingSessionCollector.getStatus().getState() == SessionState.RUNNING;
-        calibrationButton.setEnabled(running && !sessionActionPending);
-        startRecordingButton.setEnabled(!sessionActionPending);
-        startRecordingButton.setText(sessionActionPending
-                ? pendingActionStopsRecording ? R.string.saving_recording : R.string.starting_recording
-                : running ? R.string.stop_and_save : R.string.start_recording_action);
+        calibrationButton.setEnabled(running && !state.isBusy());
+        startRecordingButton.setEnabled(!state.isBusy());
+        startRecordingButton.setContentDescription(getString(state.isBusy()
+                ? state.getPhase() == RecordingPhase.SAVING ? R.string.m3_recording_saving_action
+                : R.string.m3_recording_starting_action
+                : running ? R.string.stop_and_save : R.string.start_recording_action));
     }
 
     private RecordingSessionCollector currentRunningCollector() {
@@ -440,9 +425,17 @@ public class CalibrationFragment extends Fragment {
         return recordingSessionCollector;
     }
 
+    private boolean hasRecordingPermissions() {
+        boolean locationGranted = androidx.core.content.ContextCompat.checkSelfPermission(requireContext(),
+                Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+        boolean activityGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
+                || androidx.core.content.ContextCompat.checkSelfPermission(requireContext(),
+                Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED;
+        return locationGranted && activityGranted;
+    }
+
     @Override
     public void onDestroyView() {
-        viewGeneration++;
         floorSpinner = null;
         indoorStateSpinner = null;
         buildingNameEditText = null;

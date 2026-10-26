@@ -13,6 +13,18 @@
         android:layout_height="match_parent"
         tools:context=".MapsActivity" />
 
+    <com.openpositioning.PositionMe.utils.PathView
+        android:id="@+id/pathView1"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:contentDescription="@string/path_drawing_descritpion"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintHorizontal_bias="0.0"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintVertical_bias="0.0" />
+
     <com.google.android.material.card.MaterialCardView
         android:id="@+id/cardView"
         android:layout_width="match_parent"
@@ -57,6 +69,7 @@
             <!-- System calculated average step length -->
             <TextView
                 android:id="@+id/averageStepView"
+            android:accessibilityLiveRegion="polite"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="@string/averageStepLgn"
@@ -69,6 +82,7 @@
             <!-- Correct your own avg step length input -->
             <TextView
                 android:id="@+id/correctStepLabel"
+                android:labelFor="@id/inputStepLength"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="@string/correct_your_step"
@@ -76,10 +90,10 @@
                 android:textColor="@android:color/white"
                 app:layout_constraintStart_toStartOf="parent"
                 app:layout_constraintTop_toBottomOf="@id/averageStepView"
-                app:layout_constraintBottom_toBottomOf="parent"
                 android:layout_marginTop="8dp" />
 
             <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/stepLengthInputLayout"
                 android:layout_width="80dp"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="8dp"
@@ -96,9 +110,30 @@
                     android:layout_height="wrap_content"
                     android:hint="@string/correct_step_hint"
                     android:inputType="numberDecimal"
+                    android:imeOptions="actionDone"
+                    android:minHeight="48dp"
                     android:textColor="@color/md_theme_onPrimary"
                     android:textSize="15sp" />
             </com.google.android.material.textfield.TextInputLayout>
+            <TextView
+                android:id="@+id/previewNotice"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/preview_only_notice"
+                android:textColor="@android:color/white"
+                app:layout_constraintTop_toBottomOf="@id/stepLengthInputLayout"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintEnd_toEndOf="parent" />
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/previewStepButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minHeight="48dp"
+                android:text="@string/preview_step_length"
+                app:layout_constraintTop_toBottomOf="@id/previewNotice"
+                app:layout_constraintBottom_toBottomOf="parent"
+                app:layout_constraintEnd_toEndOf="parent" />
         </androidx.constraintlayout.widget.ConstraintLayout>
     </com.google.android.material.card.MaterialCardView>
 
@@ -148,16 +183,6 @@
             android:text="@string/upload_recording" />
     </LinearLayout>
 
-    <com.openpositioning.PositionMe.utils.PathView
-        android:id="@+id/pathView1"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:contentDescription="@string/path_drawing_descritpion"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintHorizontal_bias="0.0"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintVertical_bias="0.0" />
+
 
 </androidx.constraintlayout.widget.ConstraintLayout>

@@ -7,7 +7,7 @@ PositionMe serves commercial use, scientific research, and reliable data collect
 | M0 — Integration and build baseline | Upstream history integrated without discarding fork positioning/calibration flows; reproducible debug build, meaningful unit tests, lint checks and explicit runtime limitations. |
 | M1 — Architecture | Separate acquisition, estimation, recording, persistence and presentation; typed contracts, explicit ownership and lifecycle; regression fixtures protect behavior. |
 | M2 — Reliable collection | Session state machine, background ownership, durable local checkpoints, validated recovery, versioned exports and provenance metadata. Remote resumable synchronization remains release work. |
-| M3 — Application modernization | Incremental Kotlin/state-management/UI migration; usable permission, offline, accessibility and error flows. |
+| M3 — Application modernization | Lifecycle-owned screen state, contextual permissions, offline/remote flows, accessible core controls and recoverable errors. Kotlin/Compose migration remains incremental. |
 | M4 — Release and research qualification | Fixed-trace estimator comparison, performance/battery evidence, supported-device validation, signing/distribution, privacy and licensing review. |
 
 ## Delivery
@@ -26,4 +26,4 @@ Early development: hosted CI is disabled by user instruction (2026-10-20). Local
 
 ## Current checkpoint
 
-M2 durable local collection is implemented; see M2_BASELINE.md and ARCHITECTURE.md for verification and limits. Local verification replaces hosted CI during this phase. Durable local save, recovery and export are covered; resumable remote synchronization and device qualification remain open. M3 will modernize application state, permissions, accessibility and screen flows incrementally.
+M3 core application journeys are implemented; see M3_BASELINE.md, M3_PLAN.md and ARCHITECTURE.md. Recording/calibration share lifecycle-owned state, permissions follow explicit actions, and local sessions are independent of remote catalog loading. Verification remains local. M4 release/research qualification and the documented runtime, authentication, synchronization and raw-replay gaps remain open.

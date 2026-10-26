@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="permission_recording_title">Permissions for recording</string>
+    <string name="permission_recording_rationale">PositionMe needs precise location and physical activity access to collect a useful positioning session. These permissions are requested only when you choose to record. You can still open and manage saved sessions without them.</string>
+    <string name="permission_continue">Continue</string>
+    <string name="permission_not_now">Not now</string>
+    <string name="permission_required_denied">Recording needs precise location and physical activity access. Saved sessions remain available.</string>
+    <string name="permission_required_settings_title">Allow recording permissions in Settings</string>
+    <string name="permission_required_settings_message">Location or physical activity access was denied. Open app settings to allow it before recording. Saved sessions remain available without these permissions.</string>
+    <string name="permission_optional_title">Optional positioning features</string>
+    <string name="permission_optional_rationale">Bluetooth and nearby Wi-Fi access can add radio positioning observations. Notifications keep long recordings visible. These permissions are optional; you can continue recording without them.</string>
+    <string name="permission_enable_optional">Enable optional features</string>
+    <string name="permission_continue_without">Continue without</string>
+    <string name="permission_optional_settings_title">Optional features are unavailable</string>
+    <string name="permission_optional_settings_message">Bluetooth, nearby Wi-Fi, or notifications were not allowed. Recording and saved sessions are still available. You can change these permissions in app settings.</string>
+    <string name="permission_open_settings">Open settings</string>
+    <string name="permission_manage_access">Manage access</string>
+    <string name="permission_ready_to_record">Ready to record. Tap Start when you are ready.</string>
+</resources>

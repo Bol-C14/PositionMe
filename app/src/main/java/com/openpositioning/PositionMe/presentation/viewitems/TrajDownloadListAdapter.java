@@ -163,6 +163,14 @@ public class TrajDownloadListAdapter extends RecyclerView.Adapter<TrajDownloadVi
         fileObserver.startWatching();
     }
 
+    /** Stop the directory watcher when the adapter's screen view is destroyed. */
+    public void dispose() {
+        if (fileObserver != null) {
+            fileObserver.stopWatching();
+            fileObserver = null;
+        }
+    }
+
     /**
      * Creates a new view holder for a trajectory item.
      *

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="preview_step_length">Preview step length</string>
+    <string name="preview_step_invalid">Enter a positive step length in meters.</string>
+    <string name="preview_step_unavailable">No measured step length is available for this recording.</string>
+    <string name="preview_only_notice">Preview changes the drawing only. Saved observations and uploads keep the original measurements.</string>
+    <string name="preview_step_applied">Preview step length: %1$.2f m</string>
+    <string name="measured_step_length">Measured step length: %1$.2f m</string>
+    <string name="annotation_controls">Show or hide annotation controls</string>
+    <string name="add_test_point">Add test point</string>
+    <string name="add_test_point_description">Add a timestamped ground truth point while recording</string>
+    <string name="building_name_label">Building name</string>
+    <string name="calibration_add_tag">Add tag</string>
+    <string name="calibration_error_initial">Add the first tag to calculate errors.</string>
+</resources>

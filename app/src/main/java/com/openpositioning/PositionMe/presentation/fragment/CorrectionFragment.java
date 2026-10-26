@@ -1,10 +1,11 @@
 package com.openpositioning.PositionMe.presentation.fragment;
 
 import android.os.Bundle;
-import android.text.Editable;
-import android.text.TextWatcher;
 import android.util.Log;
 import android.view.KeyEvent;
+import android.view.inputmethod.EditorInfo;
+import java.text.DecimalFormatSymbols;
+import com.openpositioning.PositionMe.presentation.correction.StepLengthPreview;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -47,11 +48,10 @@ public class CorrectionFragment extends Fragment {
     private TextView averageStepLengthText;
     private EditText stepLengthInput;
     private float averageStepLength;
-    private float newStepLength;
-    private int secondPass = 0;
-    private CharSequence changedText;
-    private static float scalingRatio = 0f;
-    private static LatLng start;
+    private float previewStepLength;
+    private float previewScale = 1f;
+    private float scalingRatio = 0f;
+    private LatLng start;
     private PathView pathView;
     private TextView uploadStatusText;
     private Button uploadButton;
@@ -83,7 +83,7 @@ public class CorrectionFragment extends Fragment {
         this.button = rootView.findViewById(R.id.correction_done);
 
 
-        supportMapFragment.getMapAsync(new OnMapReadyCallback() {
+        if (supportMapFragment != null) supportMapFragment.getMapAsync(new OnMapReadyCallback() {
             @Override
             public void onMapReady(GoogleMap map) {
                 if (generation != viewGeneration || getView() == null) return;
@@ -115,6 +115,8 @@ public class CorrectionFragment extends Fragment {
         this.pathView = view.findViewById(R.id.pathView1);
         this.uploadStatusText = view.findViewById(R.id.uploadStatusText);
         this.uploadButton = view.findViewById(R.id.uploadRecordingButton);
+        pathView.setFocusable(false);
+        pathView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         this.pathView.setTrajectory(sensorFusion.getRecordedPdrPathSnapshot());
         this.pathView.setScaleListener(scale -> {
             scalingRatio = scale;
@@ -122,41 +124,32 @@ public class CorrectionFragment extends Fragment {
         });
 
         averageStepLength = sensorFusion.passAverageStepLength();
-        averageStepLengthText.setText(getString(R.string.averageStepLgn) + ": "
-                + String.format("%.2f", averageStepLength));
-
-        // Listen for ENTER key
-        this.stepLengthInput.setOnKeyListener((v, keyCode, event) -> {
-            if (keyCode == KeyEvent.KEYCODE_ENTER) {
-                newStepLength = Float.parseFloat(changedText.toString());
-                // Rescale path
-                pathView.redraw(newStepLength / averageStepLength);
-                averageStepLengthText.setText(getString(R.string.averageStepLgn)
-                        + ": " + String.format("%.2f", newStepLength));
-                pathView.invalidate();
-
-                secondPass++;
-                if (secondPass == 2) {
-                    averageStepLength = newStepLength;
-                    secondPass = 0;
-                }
+        previewStepLength = savedInstanceState == null ? averageStepLength
+                : savedInstanceState.getFloat("previewStepLength", averageStepLength);
+        previewScale = savedInstanceState == null ? 1f
+                : savedInstanceState.getFloat("previewScale", 1f);
+        Button previewButton = view.findViewById(R.id.previewStepButton);
+        boolean canPreview = StepLengthPreview.isValidLength(averageStepLength);
+        stepLengthInput.setEnabled(canPreview);
+        previewButton.setEnabled(canPreview);
+        if (canPreview) {
+            averageStepLengthText.setText(savedInstanceState != null && StepLengthPreview.isValidLength(previewStepLength)
+                    ? getString(R.string.preview_step_applied, previewStepLength)
+                    : getString(R.string.measured_step_length, averageStepLength));
+            if (Float.isFinite(previewScale) && previewScale > 0f) pathView.redraw(previewScale);
+        } else {
+            averageStepLengthText.setText(R.string.preview_step_unavailable);
+        }
+        previewButton.setOnClickListener(v -> applyStepPreview());
+        stepLengthInput.setOnEditorActionListener((field, actionId, event) -> {
+            if (actionId == EditorInfo.IME_ACTION_DONE || event != null
+                    && event.getKeyCode() == KeyEvent.KEYCODE_ENTER
+                    && event.getAction() == KeyEvent.ACTION_UP) {
+                applyStepPreview();
+                return true;
             }
             return false;
         });
-
-        this.stepLengthInput.addTextChangedListener(new TextWatcher() {
-            @Override
-            public void beforeTextChanged(CharSequence s, int start, int count,int after) {}
-            @Override
-            public void onTextChanged(CharSequence s, int start, int before,int count) {}
-            @Override
-            public void afterTextChanged(Editable s) {
-                changedText = s;
-            }
-        });
-
-
-
 
         this.button.setOnClickListener(v -> {
             NavController navController = NavHostFragment.findNavController(CorrectionFragment.this);
@@ -171,6 +164,28 @@ public class CorrectionFragment extends Fragment {
 
         this.uploadButton.setOnClickListener(v -> validateAndUpload());
 
+    }
+
+    private void applyStepPreview() {
+        if (stepLengthInput == null || pathView == null) return;
+        try {
+            StepLengthPreview preview = StepLengthPreview.parse(stepLengthInput.getText().toString(),
+                    averageStepLength, DecimalFormatSymbols.getInstance().getDecimalSeparator());
+            previewScale = preview.getScale();
+            previewStepLength = preview.getStepLengthMeters();
+            stepLengthInput.setError(null);
+            pathView.redraw(previewScale);
+            averageStepLengthText.setText(getString(R.string.preview_step_applied, previewStepLength));
+            averageStepLengthText.announceForAccessibility(averageStepLengthText.getText());
+        } catch (IllegalArgumentException invalid) {
+            stepLengthInput.setError(getString(R.string.preview_step_invalid));
+        }
+    }
+
+    @Override public void onSaveInstanceState(@NonNull Bundle state) {
+        state.putFloat("previewScale", previewScale);
+        state.putFloat("previewStepLength", previewStepLength);
+        super.onSaveInstanceState(state);
     }
 
     public void setScalingRatio(float scalingRatio) {
@@ -250,7 +265,9 @@ public class CorrectionFragment extends Fragment {
     @Override
     public void onDestroyView() {
         viewGeneration++;
+        if (pathView != null) pathView.setScaleListener(null);
         mMap = null;
+        start = null;
         button = null;
         averageStepLengthText = null;
         stepLengthInput = null;

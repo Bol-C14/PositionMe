@@ -38,10 +38,9 @@
 
             <!-- Grouped Left Buttons -->
             <LinearLayout
-                android:layout_width="wrap_content"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:layout_weight="0">
+                android:orientation="horizontal">
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/moreInfoButton"
@@ -60,12 +59,14 @@
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/toggleCalibrationMenuButton"
-                    android:layout_width="120dp"
-                    android:layout_height="56dp"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:minHeight="56dp"
                     android:layout_marginStart="8dp"
                     android:text="@string/tag"
                     android:textSize="18sp"
-                    android:contentDescription="@string/more_info"
+                    android:contentDescription="@string/annotation_controls"
                     app:icon="@drawable/ic_tag_plus_svgrepo_com"
                     app:backgroundTint="@color/md_theme_primary"
                     app:iconGravity="textStart"
@@ -77,11 +78,13 @@
                     app:iconPadding="0dp" />
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/addTestPointButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="56dp"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:minHeight="56dp"
                     android:layout_marginStart="8dp"
-                    android:text="Test point"
-                    android:contentDescription="Add a timestamped test point"
+                    android:text="@string/add_test_point"
+                    android:contentDescription="@string/add_test_point_description"
                     app:icon="@android:drawable/ic_input_add"
                     app:iconGravity="textStart"
                     app:iconSize="20dp"
@@ -90,11 +93,7 @@
                     app:iconTint="@color/md_theme_onPrimary" />
             </LinearLayout>
 
-            <!-- Spacer -->
-            <View
-                android:layout_width="0dp"
-                android:layout_height="1dp"
-                android:layout_weight="1" />
+
 
         </LinearLayout>
 
@@ -127,6 +126,14 @@
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/manageRecordingAccessButton"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minHeight="48dp"
+            android:text="@string/permission_manage_access" />
 
         <TextView
             android:id="@+id/recordingStatusText"

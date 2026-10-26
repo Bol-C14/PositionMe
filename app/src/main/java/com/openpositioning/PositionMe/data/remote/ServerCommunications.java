@@ -25,8 +25,6 @@ import androidx.preference.PreferenceManager;
 
 import com.google.protobuf.util.JsonFormat;
 import com.openpositioning.PositionMe.BuildConfig;
-import com.openpositioning.PositionMe.presentation.fragment.FilesFragment;
-import com.openpositioning.PositionMe.presentation.activity.MainActivity;
 import com.openpositioning.PositionMe.sensors.Observable;
 import com.openpositioning.PositionMe.sensors.Observer;
 import com.openpositioning.PositionMe.utils.BuildingPolygon;
@@ -44,6 +42,7 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.zip.ZipInputStream;
 
 import okhttp3.Call;
@@ -85,7 +84,7 @@ public class ServerCommunications implements Observable {
 
     private String infoResponse;
     private boolean success;
-    private List<Observer> observers;
+    private final CopyOnWriteArrayList<Observer> observers = new CopyOnWriteArrayList<>();
 
     // Static constants necessary for communications
     private static final String userKey = BuildConfig.OPENPOSITIONING_API_KEY;
@@ -99,6 +98,16 @@ public class ServerCommunications implements Observable {
                     + "?key=" + masterKey;
     private static final String PROTOCOL_CONTENT_TYPE = "multipart/form-data";
     private static final String PROTOCOL_ACCEPT_TYPE = "application/json";
+
+    /** Cancellable, per-request result channel for the Files remote catalog. */
+    public interface CatalogCallback {
+        void onSuccess(List<RemoteTrajectorySummary> entries);
+        void onFailure(Exception failure);
+    }
+
+    public interface CatalogRequest {
+        void cancel();
+    }
 
 
 
@@ -170,7 +179,6 @@ public class ServerCommunications implements Observable {
         this.isMobileConn = false;
         checkNetworkStatus();
 
-        this.observers = new ArrayList<>();
     }
 
     /**
@@ -706,6 +714,40 @@ public class ServerCommunications implements Observable {
     }
 
     /**
+     * Load the remote trajectory catalog without coupling the request to the legacy observer
+     * channel. Invalid JSON and malformed entries are failures, never successful empty catalogs.
+     */
+    public CatalogRequest loadRemoteCatalog(CatalogCallback callback) {
+        OkHttpClient client = new OkHttpClient();
+        Request request = new Request.Builder().url(infoRequestURL)
+                .addHeader("accept", PROTOCOL_ACCEPT_TYPE).get().build();
+        Call call = client.newCall(request);
+        call.enqueue(new Callback() {
+            @Override public void onFailure(Call call, IOException failure) {
+                callback.onFailure(failure);
+            }
+
+            @Override public void onResponse(Call call, Response response) {
+                try (ResponseBody body = response.body()) {
+                    if (!response.isSuccessful()) {
+                        callback.onFailure(new IOException("Catalog request failed (HTTP "
+                                + response.code() + ")"));
+                        return;
+                    }
+                    if (body == null) {
+                        callback.onFailure(new IOException("Catalog response was empty"));
+                        return;
+                    }
+                    callback.onSuccess(RemoteTrajectoryCatalogParser.parse(body.string()));
+                } catch (Exception failure) {
+                    callback.onFailure(failure);
+                }
+            }
+        });
+        return call::cancel;
+    }
+
+    /**
      * This method checks the device's connection status. It sets boolean variables depending on
      * the type of active network connection.
      */
@@ -751,7 +793,12 @@ public class ServerCommunications implements Observable {
      */
     @Override
     public void registerObserver(Observer o) {
-        this.observers.add(o);
+        if (o != null) this.observers.addIfAbsent(o);
+    }
+
+    /** Remove a listener when its owner reaches the end of its lifecycle. Safe to call repeatedly. */
+    public void unregisterObserver(Observer o) {
+        if (o != null) this.observers.remove(o);
     }
 
     /**
@@ -765,10 +812,10 @@ public class ServerCommunications implements Observable {
     @Override
     public void notifyObservers(int index) {
         for(Observer o : observers) {
-            if(index == 0 && o instanceof FilesFragment) {
+            if(index == 0) {
                 o.update(new String[] {infoResponse});
             }
-            else if (index == 1 && o instanceof MainActivity) {
+            else if (index == 1) {
                 o.update(new Boolean[] {success});
             }
         }
