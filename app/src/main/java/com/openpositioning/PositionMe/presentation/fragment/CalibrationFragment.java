@@ -24,6 +24,7 @@ import com.google.android.material.button.MaterialButton;
 import com.openpositioning.PositionMe.R;
 import com.openpositioning.PositionMe.application.recording.RecordingSessionCollector;
 import com.openpositioning.PositionMe.domain.recording.SessionState;
+import com.openpositioning.PositionMe.domain.recording.SessionStatus;
 import com.openpositioning.PositionMe.sensors.SensorFusion;
 import com.openpositioning.PositionMe.utils.CalibrationUtils;
 
@@ -68,6 +69,9 @@ public class CalibrationFragment extends Fragment {
 
     // Count of confirmed calibration annotations.
     private int recordCount = 0;
+    private int viewGeneration;
+    private boolean sessionActionPending;
+    private boolean pendingActionStopsRecording;
 
     // Error computation and tracking
     private double totalPdrError = 0;
@@ -101,6 +105,7 @@ public class CalibrationFragment extends Fragment {
     public View onCreateView(@NonNull LayoutInflater inflater,
                              @Nullable ViewGroup container,
                              @Nullable Bundle savedInstanceState) {
+        viewGeneration++;
         View view = inflater.inflate(R.layout.fragment_calibration, container, false);
 
         // Initialize UI references
@@ -340,8 +345,13 @@ public class CalibrationFragment extends Fragment {
                                         int indoorState,
                                         int floorLevel,
                                         String buildingName) {
-        if (sensorFusion == null || recordingSessionCollector == null) {
+        RecordingSessionCollector currentCollector = currentRunningCollector();
+        if (sensorFusion == null || currentCollector == null) {
             Log.e(TAG, "Cannot trigger calibration without an active recording session.");
+            if (getContext() != null) {
+                Toast.makeText(getContext(), R.string.calibration_requires_recording,
+                        Toast.LENGTH_SHORT).show();
+            }
             return;
         }
         try {
@@ -353,7 +363,7 @@ public class CalibrationFragment extends Fragment {
             calibrationRecord.put("indoorState", indoorState);
             calibrationRecord.put("buildingName", buildingName);
 
-            recordingSessionCollector.append(calibrationRecord);
+            currentCollector.append(calibrationRecord);
             recordCount++;
             updatePointCountDisplay();
             Log.d(TAG, "Calibration triggered and saved.");
@@ -364,13 +374,43 @@ public class CalibrationFragment extends Fragment {
 
 
     private void toggleSessionRecording() {
-        if (sensorFusion == null) return;
-        if (sensorFusion.isRecording()) {
-            sensorFusion.stopRecording();
-            Toast.makeText(getContext(), "Recording stopped and saved.", Toast.LENGTH_SHORT).show();
+        if (sensorFusion == null || sessionActionPending) return;
+        final int generation = viewGeneration;
+        pendingActionStopsRecording = sensorFusion.isRecording();
+        sessionActionPending = true;
+        updateRecordingControls();
+        if (pendingActionStopsRecording) {
+            sensorFusion.stopAndSave().whenComplete((status, failure) ->
+                    new android.os.Handler(android.os.Looper.getMainLooper()).post(() ->
+                            finishSessionAction(generation, status, failure)));
         } else {
             sensorFusion.setStartGNSSLatitude(sensorFusion.getGNSSLatitude(false));
-            sensorFusion.startRecording();
+            sensorFusion.startRecordingAsync().whenComplete((status, failure) ->
+                    new android.os.Handler(android.os.Looper.getMainLooper()).post(() ->
+                            finishSessionAction(generation, status, failure)));
+        }
+    }
+
+    private void finishSessionAction(int generation, SessionStatus status, Throwable failure) {
+        sessionActionPending = false;
+        recordingSessionCollector = sensorFusion == null ? null
+                : sensorFusion.getRecordingSessionCollector();
+        if (generation != viewGeneration || getView() == null) return;
+        if (failure != null || status == null || status.isFailure()) {
+            String detail = failure != null ? failure.getMessage()
+                    : status == null ? null : status.getFailureMessage();
+            int message = pendingActionStopsRecording
+                    ? R.string.recording_save_failed : R.string.recording_start_failed;
+            Toast.makeText(requireContext(), getString(message,
+                    detail == null || detail.trim().isEmpty() ? "Please try again." : detail),
+                    Toast.LENGTH_LONG).show();
+        } else if (pendingActionStopsRecording && status.hasWarning()) {
+            Toast.makeText(requireContext(), getString(R.string.recording_saved_export_warning,
+                    status.getFailureMessage()), Toast.LENGTH_LONG).show();
+        } else {
+            Toast.makeText(requireContext(), pendingActionStopsRecording
+                    ? R.string.calibration_recording_saved : R.string.recording_started,
+                    Toast.LENGTH_SHORT).show();
         }
         updateRecordingControls();
     }
@@ -378,14 +418,40 @@ public class CalibrationFragment extends Fragment {
     /** Updates controls from the session owner without collecting or persisting records here. */
     public void updateRecordingControls() {
         if (calibrationButton == null || startRecordingButton == null) return;
-        if (recordingSessionCollector == null && sensorFusion != null) {
-            recordingSessionCollector = sensorFusion.getRecordingSessionCollector();
-        }
+        recordingSessionCollector = sensorFusion == null ? null
+                : sensorFusion.getRecordingSessionCollector();
         boolean running = sensorFusion != null && sensorFusion.isRecording()
                 && recordingSessionCollector != null
                 && recordingSessionCollector.getStatus().getState() == SessionState.RUNNING;
-        calibrationButton.setEnabled(running);
-        startRecordingButton.setText(running ? "Stop recording" : "Start recording");
+        calibrationButton.setEnabled(running && !sessionActionPending);
+        startRecordingButton.setEnabled(!sessionActionPending);
+        startRecordingButton.setText(sessionActionPending
+                ? pendingActionStopsRecording ? R.string.saving_recording : R.string.starting_recording
+                : running ? R.string.stop_and_save : R.string.start_recording_action);
+    }
+
+    private RecordingSessionCollector currentRunningCollector() {
+        if (sensorFusion == null) return null;
+        recordingSessionCollector = sensorFusion.getRecordingSessionCollector();
+        if (!sensorFusion.isRecording() || recordingSessionCollector == null
+                || recordingSessionCollector.getStatus().getState() != SessionState.RUNNING) {
+            return null;
+        }
+        return recordingSessionCollector;
+    }
+
+    @Override
+    public void onDestroyView() {
+        viewGeneration++;
+        floorSpinner = null;
+        indoorStateSpinner = null;
+        buildingNameEditText = null;
+        calibrationButton = null;
+        startRecordingButton = null;
+        pointCountTextView = null;
+        errorTextView = null;
+        calibrationMarker = null;
+        super.onDestroyView();
     }
 
     private void updatePointCountDisplay() {

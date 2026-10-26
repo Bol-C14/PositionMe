@@ -1,4 +1,4 @@
-# PositionMe architecture after M1
+# PositionMe architecture after M2
 
 ## Ownership and dependency direction
 
@@ -8,7 +8,7 @@
 | sensors/SensorFusion | Android acquisition adapters, session composition, event subscriptions, recorded PDR history | Domain interfaces and application recording contracts |
 | application/recording/RecordingSessionCollector | Sampling cadence, ordered writes, stop/failure/finalization state | Injected source, sink, scheduler and monotonic clock |
 | sensors/TrajectoryRecorder | Protobuf trajectory builder and its recording timer | Immutable sensor snapshots and recorder lock |
-| data/local | App-private JSONL persistence and finalized Downloads export | Android file/MediaStore APIs and recording sink contract |
+| data/local/session | Durable UUID session journals, manifest catalog, recovery validation and portable bundles | Recording sink contract, filesystem and Android export adapter |
 | data/ml/TfliteWifiPositionPredictor | Optional TFLite runtime, dictionary and tensor contract | Typed WifiFingerprint, model bounds and domain predictor interface |
 | presentation | Views, map objects, main-thread rendering and view subscription lifetime | Read-only snapshots, events and explicit commands |
 
@@ -30,8 +30,16 @@ The JSONL collector has one serial worker for periodic snapshots, WiFi request s
 
 Protobuf builder mutations and immutable builds share a private recorder lock. Timer readings take an immutable sensor snapshot before that lock; sensor callbacks release the sensor-state lock before entering the recorder. Stopped recorders reject asynchronous appends. No recorder lock is held during network upload.
 
-The foreground service keeps a live session active in the background. It does not claim process-death recovery. Application-owned PDR history survives view unsubscription; correction views render their own copied path.
+The foreground service supports live background collection and uses a session generation token so stale lifecycle callbacks cannot finalize a newer recording. It is non-sticky: process death ends acquisition. Application-owned PDR history survives view unsubscription; correction views render their own copied path. Hardware behavior still requires device qualification.
+
+## Durable sessions and recovery
+
+`RecordingSessionFactory` creates an app-private `recording_sessions/<UUID>` directory. `SessionJournal` owns its exclusive writer lock, append-only `records.jsonl` and a versioned `manifest.json`. JSON records include their session ID. The manifest records epoch and monotonic start times in milliseconds, provenance, committed byte length/count, state and independent export status. The collector periodically captures an immutable protobuf checkpoint; journal bytes are flushed and fsynced before a manifest publication claims them. Each protobuf generation has a distinct filename and SHA-256 reference. Manifest replacement is atomic where the filesystem supports it; directory fsync is best effort. This does not establish guarantees against arbitrary storage or power failure.
+
+Cold-start recovery skips locked live writers. It validates the committed JSON prefix and referenced checkpoint, marks abandoned OPEN sessions INTERRUPTED, and trims only uncommitted suffix bytes with a recorded loss report. Invalid committed data is marked CORRUPT and preserved. User recovery finalizes retained data as RECOVERED; it never resumes sensors or fabricates continuity. Valid JSON-only sessions remain recoverable/exportable even without a protobuf checkpoint. Failed sessions can be recovered only after the same validation. Five seconds is a checkpoint scheduling target, not a guaranteed loss bound under stalls, storage failure or process termination.
+
+Stop freezes protobuf acquisition before the collector drains accepted writes, captures its final checkpoint and finalizes the private session. A Downloads export failure leaves private SAVED data intact with a separate retry status. Export bundles contain the manifest, exactly the validated committed JSONL prefix and only its referenced protobuf checkpoint. Temporary files, locks and orphan generations are excluded. Android 10+ publishes through pending MediaStore Downloads entries; Android 9 uses app-specific Downloads. Existing completed exports survive failed retries. Upload remains an explicit user action.
 
 ## Remaining boundaries
 
-SharedPreferences/PdrProcessing and the legacy Android facade still need incremental cleanup. JSON is retained as the existing persistence compatibility format, not introduced into the domain estimator. Optional WiFi model assets remain absent; no model inference quality claim is made. Session state is not durable across process death, and protobuf collection still uses a timer rather than a raw-event log. These belong to later collection/replay work.
+SharedPreferences/PdrProcessing and the legacy Android facade still need incremental cleanup. JSON is retained as the existing persistence compatibility format, not introduced into the domain estimator. Optional WiFi model assets remain absent; no model inference quality claim is made. Protobuf collection still uses a timer rather than a full raw hardware-event log; JSONL contains sampled snapshots and annotations. A recovered protobuf may precede the latest committed JSON data. Recovery does not reconstruct a complete algorithm replay or restore the map correction path from raw events. Remote resumable synchronization, encryption/retention controls, bounded buffering, long-session storage limits and device process/background qualification remain open release work.

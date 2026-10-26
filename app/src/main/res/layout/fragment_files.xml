@@ -23,7 +23,6 @@
             app:cardCornerRadius="16dp"
             app:cardElevation="4dp"
             app:strokeColor="@color/md_theme_light_onPrimary"
-            app:layout_constraintBottom_toTopOf="@id/filesList"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toTopOf="parent">
@@ -59,6 +58,43 @@
             </androidx.constraintlayout.widget.ConstraintLayout>
         </com.google.android.material.card.MaterialCardView>
 
+        <TextView
+            android:id="@+id/localSessionsTitle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:layout_marginTop="8dp"
+            android:text="@string/saved_sessions"
+            android:textAppearance="?attr/textAppearanceTitleMedium"
+            app:layout_constraintTop_toBottomOf="@id/uploadCard"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/localSessionsList"
+            android:layout_width="0dp"
+            android:layout_height="160dp"
+            android:layout_marginStart="8dp"
+            android:layout_marginEnd="8dp"
+            android:accessibilityLiveRegion="polite"
+            app:layout_constraintTop_toBottomOf="@id/localSessionsTitle"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+
+        <TextView
+            android:id="@+id/localSessionsEmpty"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="16dp"
+            android:layout_marginEnd="16dp"
+            android:gravity="center"
+            android:text="@string/saved_sessions_empty"
+            android:visibility="gone"
+            app:layout_constraintTop_toBottomOf="@id/localSessionsTitle"
+            app:layout_constraintBottom_toBottomOf="@id/localSessionsList"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+
         <!-- RecyclerView for Files List -->
         <androidx.recyclerview.widget.RecyclerView
             android:id="@+id/filesList"
@@ -66,7 +102,7 @@
             android:layout_height="0dp"
             android:layout_marginStart="8dp"
             android:layout_marginEnd="8dp"
-            app:layout_constraintTop_toBottomOf="@id/uploadCard"
+            app:layout_constraintTop_toBottomOf="@id/localSessionsList"
             app:layout_constraintBottom_toBottomOf="parent"
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintEnd_toEndOf="parent" />

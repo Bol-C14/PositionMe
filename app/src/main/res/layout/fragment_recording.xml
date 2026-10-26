@@ -96,21 +96,6 @@
                 android:layout_height="1dp"
                 android:layout_weight="1" />
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/finishRecordingButton"
-                android:layout_width="56dp"
-                android:layout_height="56dp"
-                android:layout_marginStart="8dp"
-                android:contentDescription="@string/more_info"
-                app:icon="@drawable/next_svgrepo_com"
-                app:backgroundTint="@color/md_theme_primary"
-                app:iconGravity="textStart"
-                app:cornerRadius="16dp"
-                app:iconSize="24dp"
-                android:padding="0dp"
-                app:strokeWidth="0dp"
-                android:backgroundTint="@color/md_theme_light_primary"
-                app:iconPadding="0dp" />
         </LinearLayout>
 
         <!-- Calibration Fragment Container (Initially GONE) -->
@@ -141,7 +126,40 @@
         android:background="#AAFFFFFF"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent" />
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <TextView
+            android:id="@+id/recordingStatusText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:accessibilityLiveRegion="polite"
+            android:text="@string/recording_not_started"
+            android:textAppearance="?attr/textAppearanceBodyLarge"
+            android:paddingBottom="6dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/finishRecordingButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/start_recording_action"
+                android:contentDescription="@string/start_recording_action" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/savedSessionsButton"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="@string/saved_sessions" />
+        </LinearLayout>
+    </LinearLayout>
 
 
 </androidx.constraintlayout.widget.ConstraintLayout>
